@@ -185,10 +185,9 @@ env:
   SUSFS_ENABLE: ${{ inputs.enable_susfs == false && 'false' || 'true' }}
   SUSFS_KERNEL_PATCH: ${{ inputs.susfs_kernel_patch || 'patches/susfs_patch_to_4.19.patch' }}
   SUSFS_KSU_PATCH: ${{ inputs.susfs_ksu_patch || 'patches/10_enable_susfs_for_ksu.patch' }}
-  # Mode senyap: log SUSFS dimatikan dan printk KernelSU dibungkam (dmesg tidak membocorkan SUSFS/KernelSU). 'false' untuk debug.
-  # true = kurangi jejak dmesg/log (KSU_NOPRINTK, SUSFS_ENABLE_LOG dimatikan). Tidak mengubah fungsi hide SELinux;
-  # hanya mengurangi baris log yang bisa dibaca lewat dmesg/logcat. Matikan sementara (false) kalau sedang
-  # debug masalah lain dan butuh log KernelSU/SUSFS muncul.
+  # Mode senyap: printk KernelSU dibungkam (KSU_NOPRINTK). 'false' untuk debug.
+  # CATATAN: KSU_SUSFS_ENABLE_LOG sekarang SELALU aktif (SUSFS Jack v2.4.0 butuh makro SUSFS_LOGI_RL dari opsi itu;
+  # tanpa log, fs/susfs.c gagal dikompilasi). Tidak mengubah fungsi hide SELinux.
   KSU_STEALTH: "true"
   SUSFS_REQUIRE_GLUE: ${{ inputs.susfs_require_ksu_glue == false && 'false' || 'true' }}
   SUSFS_OPTS: "KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP KSU_SUSFS_PRIORITY_UID_FILTER"
@@ -2171,12 +2170,10 @@ jobs:
             scripts/config --file out/.config -e NOMOUNT
           fi
 
-          # --- Mode senyap: buang ENABLE_LOG dari daftar opsi (juga dari daftar verifikasi di bawah) ---
-          if [ "$KSU_STEALTH" = "true" ]; then
-            SUSFS_OPTS="$(printf '%s\n' "$SUSFS_OPTS" | tr ' ' '\n' | grep -vx 'KSU_SUSFS_ENABLE_LOG' | tr '\n' ' ')"
-            scripts/config --file out/.config -d KSU_SUSFS_ENABLE_LOG
-            echo "::notice::KSU_STEALTH: KSU_SUSFS_ENABLE_LOG dimatikan"
-          fi
+          # --- KSU_SUSFS_ENABLE_LOG WAJIB aktif ---
+          # Bila dimatikan, susfs.h tidak mendefinisikan SUSFS_LOGI_RL (dipakai fs/susfs.c:98,175) sehingga kompilasi gagal:
+          # "implicit declaration of function 'SUSFS_LOGI_RL'". Opsi ini tetap ada di SUSFS_OPTS (diaktifkan & diverifikasi).
+          # KSU_STEALTH kini hanya membungkam printk KernelSU (KSU_NOPRINTK) di atas.
           # --- SUSFS (Jack) 10 opsi + fgetpriority (built-in) ---
           if [ "$SUSFS_ENABLE" = "true" ]; then
             for o in $SUSFS_OPTS; do scripts/config --file out/.config -e "$o"; done
