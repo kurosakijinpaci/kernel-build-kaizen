@@ -19,50 +19,28 @@ name: Whyred Kernel 4.19 - xxKSU + NoMount + CIP
 #               Manager buatan repo ini ditandatangani manager/dummy.keystore (kunci PUBLIK, sertifikat 0x363 / 4359c171...); driver
 #               sudah menerimanya (apk_sign.c). Driver juga menerima kunci KernelSU resmi, KOWX712, dan midori01.
 #               Kecocokan driver<->manager: UAPI harus sama (6 = 6, dicek di log) dan versi driver >= MINIMAL_SUPPORTED_KERNEL manager.
-#               Input ksu_sync_version menyamakan angka versi driver dengan versionCode manager (30000 + jumlah commit - pengurang yang dibaca dari manager/build.gradle.kts, saat ini 92).
+#               Input ksu_sync_version menyamakan angka versi driver dengan versionCode manager (30000 + jumlah commit - 93).
 # NoMount     : v2.3.0-720 (maxsteeel/nomount) built-in (CONFIG_NOMOUNT=y) lewat setup.sh resmi dari tag. Modul metamodule di perangkat
 #               harus ikut v2.3.0 (driver dan modul dirilis berpasangan).
 # Kernel base : source tree di-merge dengan upstream CIP (linux-4.19.y-cip) SEBELUM patch lain (input merge_cip, default aktif),
 #               lalu bump localversion-st dan cherry-pick 3 commit Maya Kernel.
 # Toolchain   : AOSP Clang r547379 (clang 20.0.0). LTO mengikuti input lto_mode (default full, fallback otomatis).
 # Tree source TIDAK boleh membawa root/SUSFS bawaan: workflow berhenti jika terdeteksi.
-#
-# ANTI-BOCOR (input stealth, default aktif): KSU_NOPRINTK=y (dmesg tidak memuat log KernelSU), KSU_SUSFS_ENABLE_LOG=n,
-#               IKCONFIG_PROC=n (/proc/config.gz tidak membuka CONFIG_KSU*/SUSFS/NOMOUNT).
-# VERSI       : input ksu_driver_version (default 32730) menetapkan angka versi driver = versionCode manager dari rilis xx v3.3.1-50
-#               (APK di halaman rilis backslashxx/KernelSU tag v3.3.1-50), supaya manager itu tampil sama dengan kernel. Hanya angka versi.
-#               APK rilis tiann (KernelSU_v3_3_1-50-g64833c00, sertifikat 0x33b) juga diterima driver, tetapi bukan pasangan xx.
-# KOMIT xxKSU : input ksu_run_id (default kosong; default ksu_ref = ec964a92) = ID Actions run backslashxx/KernelSU; workflow membaca head_sha run itu lewat
-#               API GitHub dan memakai commit tersebut apa adanya (SELinux master tidak ditimpa). Kosongkan ksu_run_id untuk memakai ksu_ref.
 
 on:
   workflow_dispatch:
     inputs:
-      ksu_run_id:
-        description: "ID Actions run backslashxx/KernelSU (angka di akhir URL .../actions/runs/<ID>). Bila diisi, commit run itu (head_sha) dipakai dan MENGGANTIKAN ksu_ref. Kosongkan untuk memakai ksu_ref."
-        default: ""
-        required: false
-        type: string
       ksu_ref:
-        description: "Tag ATAU hash commit xxKSU (backslashxx/KernelSU). Dipakai hanya bila ksu_run_id kosong. Default = commit ec964a92 (manager 32736, 6 commit setelah v3.3.1-50)."
-        default: "ec964a920c39dd8d1c2a4cfaf53550481d56645d"
+        description: "Tag ATAU hash commit xxKSU (backslashxx/KernelSU). Default v3.3.1-50."
+        default: "v3.3.1-50"
         required: true
         type: string
-      stealth:
-        description: "Mode senyap (anti-bocor): printk KernelSU dibungkam (KSU_NOPRINTK), log SUSFS dimatikan, /proc/config.gz dimatikan. Matikan hanya untuk debug."
-        type: boolean
-        default: true
       ksu_selinux_master:
         description: "Ambil folder kernel/selinux dari ujung master xxKSU (commit SELinux terbaru sesudah tag). Sisa driver tetap di tag. Matikan bila kompilasi gagal karena file SELinux master butuh perubahan lain di luar folder itu."
         type: boolean
         default: true
-      ksu_driver_version:
-        description: "Angka versi driver KernelSU yang tampil di manager. Default 32730 = versionCode manager dari rilis xx v3.3.1-50 (https://github.com/backslashxx/KernelSU/releases/tag/v3.3.1-50, ditandatangani dummy.keystore, diterima driver). Jangan dicampur dengan APK rilis tiann (g64833c00) kecuali memang disengaja. Mengalahkan ksu_sync_version. Kosongkan untuk memakai ksu_sync_version (menyamakan dengan manager yang dibangun dari commit ini, mis. 32736 untuk ec964a92). Hanya mengubah angka versi, bukan kode driver."
-        default: "32730"
-        required: false
-        type: string
       ksu_sync_version:
-        description: "Samakan angka versi driver (KSU_VERSION) dengan versionCode manager dari tag yang sama (30000 + jumlah commit git - pengurang dari build.gradle.kts). Matikan untuk memakai angka bawaan Makefile (32730)."
+        description: "Samakan angka versi driver (KSU_VERSION) dengan versionCode manager dari tag yang sama (30000 + jumlah commit git - 93). Matikan untuk memakai angka bawaan Makefile (32730)."
         type: boolean
         default: true
       ksu_hook_mode:
@@ -173,12 +151,10 @@ env:
 
   # --- xxKSU (backslashxx/KernelSU), dipasang dengan clone + checkout tag ---
   KSU_REPO: https://github.com/backslashxx/KernelSU
-  KSU_REF: ${{ inputs.ksu_ref || 'ec964a920c39dd8d1c2a4cfaf53550481d56645d' }}
-  KSU_RUN_ID: ${{ inputs.ksu_run_id }}
+  KSU_REF: ${{ inputs.ksu_ref || 'v3.3.1-50' }}
   KSU_SELINUX_MASTER: ${{ inputs.ksu_selinux_master == false && 'false' || 'true' }}
   KSU_HOOK_MODE: ${{ inputs.ksu_hook_mode || 'branch_link' }}
   KSU_SYNC_VERSION: ${{ inputs.ksu_sync_version == false && 'false' || 'true' }}
-  KSU_DRV_OVERRIDE: ${{ inputs.ksu_driver_version }}
   ENABLE_MEMCG_PSI: ${{ inputs.enable_memcg_psi == true && 'true' || 'false' }}
 
   # --- Upstream CIP (merge ke tree sebelum patch lain) ---
@@ -210,7 +186,10 @@ env:
   SUSFS_KERNEL_PATCH: ${{ inputs.susfs_kernel_patch || 'patches/susfs_patch_to_4.19.patch' }}
   SUSFS_KSU_PATCH: ${{ inputs.susfs_ksu_patch || 'patches/10_enable_susfs_for_ksu.patch' }}
   # Mode senyap: log SUSFS dimatikan dan printk KernelSU dibungkam (dmesg tidak membocorkan SUSFS/KernelSU). 'false' untuk debug.
-  KSU_STEALTH: ${{ inputs.stealth == false && 'false' || 'true' }}
+  # true = kurangi jejak dmesg/log (KSU_NOPRINTK, SUSFS_ENABLE_LOG dimatikan). Tidak mengubah fungsi hide SELinux;
+  # hanya mengurangi baris log yang bisa dibaca lewat dmesg/logcat. Matikan sementara (false) kalau sedang
+  # debug masalah lain dan butuh log KernelSU/SUSFS muncul.
+  KSU_STEALTH: "true"
   SUSFS_REQUIRE_GLUE: ${{ inputs.susfs_require_ksu_glue == false && 'false' || 'true' }}
   SUSFS_OPTS: "KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP KSU_SUSFS_PRIORITY_UID_FILTER"
 
@@ -1400,37 +1379,6 @@ jobs:
           git commit -q -m "Integrate SUSFS ${SV} (JackA1ltman NonGKI_Kernel_Build_2nd, 4.19)"
           echo "::notice::SUSFS ${SV} (kernel-side) terintegrasi"
 
-      - name: Tambal makro SUSFS_LOGI_RL/LOGE_RL untuk build tanpa log (bug patch SUSFS v2.4.0)
-        if: ${{ env.SUSFS_ENABLE == 'true' }}
-        working-directory: kernel
-        run: |
-          set -eo pipefail
-          # Patch Jack v2.4.0: di fs/susfs.c, cabang #else (CONFIG_KSU_SUSFS_ENABLE_LOG tidak aktif) hanya mendefinisikan
-          # SUSFS_LOGI dan SUSFS_LOGE, padahal fungsi susfs_add_sus_type() dan susfs_add_sus_avd_allowed_by_type() memakai
-          # SUSFS_LOGI_RL. Hasilnya error "implicit declaration of function 'SUSFS_LOGI_RL'" saat log dimatikan (mode senyap).
-          python3 - <<'PYLOG'
-          import re, sys
-          p = "fs/susfs.c"
-          s = open(p, encoding="utf-8").read()
-          if re.search(r"^#define SUSFS_LOGI_RL\b", s.split("#else", 1)[-1], re.M) and "SUSFS_LOGE_RL(fmt, ...) \n#endif" in s:
-              print("[skip] makro _RL sudah ada di cabang tanpa log"); sys.exit(0)
-          pat = re.compile(r"(#else\n#define SUSFS_LOGI\(fmt, \.\.\.\)[ \t]*\n#define SUSFS_LOGE\(fmt, \.\.\.\)[ \t]*\n)(#endif)")
-          m = pat.search(s)
-          if not m:
-              i = s.find("#define SUSFS_LOGE(fmt")
-              print("::error::blok makro SUSFS_LOG* di fs/susfs.c tidak sesuai dugaan; kirim keluaran ini")
-              print(s[max(0, i - 600):i + 400])
-              sys.exit(1)
-          s = pat.sub(lambda m: m.group(1) + "#define SUSFS_LOGI_RL(fmt, ...) \n#define SUSFS_LOGE_RL(fmt, ...) \n" + m.group(2), s, count=1)
-          open(p, "w", encoding="utf-8").write(s)
-          print("[ok] SUSFS_LOGI_RL / SUSFS_LOGE_RL ditambahkan ke cabang tanpa log")
-          PYLOG
-          grep -n "define SUSFS_LOG" fs/susfs.c
-          git config user.name "ci"; git config user.email "ci@local"
-          git add -A
-          git commit -q -m "SUSFS: define SUSFS_LOGI_RL/LOGE_RL when ENABLE_LOG is off" || true
-          echo "::notice::makro SUSFS_*_RL untuk build tanpa log sudah ada"
-
       - name: Integrasikan fgetpriority (aerath-stuff, built-in)
         if: ${{ env.FGP_ENABLE == 'true' }}
         working-directory: kernel
@@ -1539,39 +1487,12 @@ jobs:
         # WAJIB di dalam tree kernel: symlink drivers/kernelsu -> ../KernelSU/kernel harus terbentuk di kernel/drivers,
         # dan langkah sesudahnya (path_umount, kallsyms, Build, upload log) membaca kernel/KernelSU.
         working-directory: kernel
-        env:
-          GH_API_TOKEN: ${{ github.token }}
         run: |
           set -eo pipefail
           # Langkah sama dengan kernel/setup.sh xxKSU: symlink drivers/kernelsu + entri di drivers/Makefile & drivers/Kconfig.
           rm -rf KernelSU
           git clone -q "$KSU_REPO" KernelSU
           git -C KernelSU fetch -q --tags --force || true
-          # --- Commit dari Actions run (input ksu_run_id): ambil head_sha lewat API publik GitHub ---
-          if [ -n "${KSU_RUN_ID:-}" ]; then
-            echo "== Menentukan commit dari Actions run ${KSU_RUN_ID} =="
-            curl -fsSL --retry 3 --connect-timeout 20 \
-              -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_API_TOKEN}" \
-              "https://api.github.com/repos/backslashxx/KernelSU/actions/runs/${KSU_RUN_ID}" -o /tmp/ksu-run.json \
-              || { echo "::error::run ${KSU_RUN_ID} tidak bisa dibaca dari API (run dihapus/kedaluwarsa, atau bukan milik backslashxx/KernelSU). Kosongkan ksu_run_id dan isi ksu_ref dengan hash commit."; exit 1; }
-            python3 - <<'PYRUN'
-          import json
-          d = json.load(open("/tmp/ksu-run.json"))
-          print("run   :", d.get("name"), "| event:", d.get("event"), "| status:", d.get("status"), "/", d.get("conclusion"))
-          print("branch:", d.get("head_branch"), "| judul:", d.get("display_title"))
-          print("commit:", d.get("head_sha"))
-          open("/tmp/ksu-run.sha", "w").write(d.get("head_sha") or "")
-          open("/tmp/ksu-run.concl", "w").write(str(d.get("conclusion")))
-          PYRUN
-            RUN_SHA="$(cat /tmp/ksu-run.sha)"
-            [ "${#RUN_SHA}" -eq 40 ] || { echo "::error::head_sha run ${KSU_RUN_ID} tidak valid"; exit 1; }
-            [ "$(cat /tmp/ksu-run.concl)" = "success" ] || echo "::warning::run ${KSU_RUN_ID} tidak berstatus success ($(cat /tmp/ksu-run.concl)); commit tetap dipakai"
-            KSU_REF="$RUN_SHA"
-            # commit yang dituju dipakai APA ADANYA: SELinux dari master tidak ditimpa
-            KSU_SELINUX_MASTER=false
-            echo "::notice::xxKSU dipin ke commit run ${KSU_RUN_ID}: ${RUN_SHA:0:8} (SELinux master dimatikan)"
-          fi
-          git -C KernelSU cat-file -e "${KSU_REF}^{commit}" 2>/dev/null || git -C KernelSU fetch -q origin "$KSU_REF" || true
           if git -C KernelSU rev-parse -q --verify "refs/tags/${KSU_REF}^{commit}" >/dev/null; then
             git -C KernelSU checkout -q "refs/tags/${KSU_REF}"
             KSU_LABEL="$KSU_REF"
@@ -1595,31 +1516,52 @@ jobs:
             [ "$(grep -cE 'reset_avc_cache\((get_latest_granting_inc\(\)|pol->latest_granting)\)' "$1")" -ge 2 ] \
               && ! grep -q 'reset_avc_cache(0)' "$1"
           }
+          # Path kedua yang disinkronkan bersamaan: kernel/feature/selinux_hide.* (implementasi "selinux hide"
+          # sesungguhnya -- kernel/selinux cuma soal generation tracking/seqno, bukan penyamaran ke app/root).
+          # xxKSU aktif merevisi file ini di master (mis. tiann#3647 "spoof status page and avd seqno") sesudah
+          # tag rilis dibuat, jadi disatukan di sini supaya ikut ter-update tiap build, tidak perlu ganti tag manual.
+          SELHIDE_PATHS="kernel/feature/selinux_hide.c kernel/feature/selinux_hide.h"
+          # Sanity check murah (bukan pengganti kompilasi): pastikan ke-4 hook penyamaran yang dipakai xxKSU masih
+          # ada namanya di file ini. Kalau refactor besar mengganti nama fungsi-fungsi ini, anggap tidak "clean"
+          # untuk dipakai parsial (daripada bisa gagal link/compile dengan file lain yang masih versi tag).
+          selhide_is_clean() {
+            for fn in ksu_hide_setprocattr_inline ksu_hide_setxattr_inline ksu_selinux_transaction_write ksu_sel_open_handle_status ksu_selinux_hide_init; do
+              grep -q "$fn" "$1" || return 1
+            done
+            return 0
+          }
           if [ "$KSU_SELINUX_MASTER" = "true" ]; then
             git -C KernelSU fetch -q origin master
             MASTER="$(git -C KernelSU rev-parse origin/master)"
-            echo "== Commit master (${MASTER:0:8}) yang menyentuh kernel/selinux sejak ${KSU_LABEL} =="
-            git -C KernelSU log --format='%h %ad %s' --date=short "${BASE}..${MASTER}" -- kernel/selinux | head -20 || true
-            if git -C KernelSU diff --quiet "$BASE" "$MASTER" -- kernel/selinux; then
-              echo "::notice::kernel/selinux di master identik dengan ${KSU_LABEL}: tidak ada perubahan SELinux baru"
+            echo "== Commit master (${MASTER:0:8}) yang menyentuh kernel/selinux + selinux_hide sejak ${KSU_LABEL} =="
+            git -C KernelSU log --format='%h %ad %s' --date=short "${BASE}..${MASTER}" -- kernel/selinux $SELHIDE_PATHS | head -25 || true
+            if git -C KernelSU diff --quiet "$BASE" "$MASTER" -- kernel/selinux $SELHIDE_PATHS; then
+              echo "::notice::kernel/selinux + selinux_hide di master identik dengan ${KSU_LABEL}: tidak ada perubahan baru"
               SEL_NOTE="tag ${KSU_LABEL} (master identik)"
             else
-              git -C KernelSU diff --stat "$BASE" "$MASTER" -- kernel/selinux
-              git -C KernelSU checkout "$MASTER" -- kernel/selinux
-              SEL_NOTE="kernel/selinux dari master @ ${MASTER:0:8}"
-              echo "::notice::kernel/selinux diambil dari master @ ${MASTER:0:8}"
-              if ! sel_is_clean KernelSU/kernel/selinux/rules.c; then
-                echo "::warning::kernel/selinux master @ ${MASTER:0:8} TIDAK clean (tanpa generation tracking policy): kembali ke versi tag ${KSU_LABEL}"
-                git -C KernelSU rm -rfq -- kernel/selinux
-                git -C KernelSU checkout "$BASE" -- kernel/selinux
-                SEL_NOTE="tag ${KSU_LABEL} (selinux master @ ${MASTER:0:8} ditolak: tidak clean)"
+              git -C KernelSU diff --stat "$BASE" "$MASTER" -- kernel/selinux $SELHIDE_PATHS
+              # Diambil SEKALIGUS (bukan terpisah): selinux_hide.c memakai backup_sepolicy/helper dari kernel/selinux,
+              # jadi keduanya harus dari sumber yang sama supaya tidak hilang simbol saat kompilasi.
+              git -C KernelSU checkout "$MASTER" -- kernel/selinux $SELHIDE_PATHS
+              SEL_NOTE="kernel/selinux + selinux_hide dari master @ ${MASTER:0:8}"
+              echo "::notice::kernel/selinux + selinux_hide diambil dari master @ ${MASTER:0:8}"
+              BAD=""
+              sel_is_clean KernelSU/kernel/selinux/rules.c || BAD="rules.c tidak clean (generation tracking hilang)"
+              [ -z "$BAD" ] && { selhide_is_clean KernelSU/kernel/feature/selinux_hide.c || BAD="selinux_hide.c kehilangan hook inti"; }
+              if [ -n "$BAD" ]; then
+                echo "::warning::master @ ${MASTER:0:8} ditolak ($BAD): kembali ke versi tag ${KSU_LABEL} untuk kernel/selinux + selinux_hide"
+                git -C KernelSU rm -rfq -- kernel/selinux $SELHIDE_PATHS
+                git -C KernelSU checkout "$BASE" -- kernel/selinux $SELHIDE_PATHS
+                SEL_NOTE="tag ${KSU_LABEL} (master @ ${MASTER:0:8} ditolak: $BAD)"
               fi
             fi
           fi
           # Gerbang akhir: apa pun sumbernya, kernel/selinux yang akan dibangun harus clean (gagal cepat sebelum build 30 menit).
           sel_is_clean KernelSU/kernel/selinux/rules.c \
             || { echo "::error::kernel/selinux xxKSU ${KSU_LABEL} tidak memuat generation tracking policy (seqno statis => policy terlihat dirty). Pakai ksu_ref yang lebih baru (>= v3.3.1-50)."; exit 1; }
-          echo "::notice::SELinux clean: generation tracking policy ada (${SEL_NOTE})"
+          selhide_is_clean KernelSU/kernel/feature/selinux_hide.c \
+            || { echo "::error::kernel/feature/selinux_hide.c xxKSU ${KSU_LABEL} kehilangan hook inti (my_write_context/my_write_access/initialize_fake_status)."; exit 1; }
+          echo "::notice::SELinux clean: generation tracking + selinux_hide ada (${SEL_NOTE})"
           # --- Kecocokan driver <-> manager ---
           # 1) UAPI: ksud/manager menolak driver bila angka UAPI beda ("UAPI version mismatch ... Please update KernelSU!").
           UAPI_RE='KERNEL_SU_UAPI_VERSION[^0-9]*[0-9]+'
@@ -1644,26 +1586,14 @@ jobs:
           else
             echo "::warning::keytool/dummy.keystore tidak tersedia: pemeriksaan tanda tangan manager dilewati"
           fi
-          # 3) Versi: manager = 30000 + jumlah commit - pengurang (build.gradle.kts); driver = -DKSU_VERSION di kernel/Makefile.
+          # 3) Versi: manager = 30000 + jumlah commit - 93 (build.gradle.kts); driver = -DKSU_VERSION di kernel/Makefile.
           CNT="$(git -C KernelSU rev-list --count "$BASE")"
-          # Pengurang (92/93/...) berubah antar rilis: baca dari manager/build.gradle.kts commit ini (cadangan 93).
-          OFS="$(grep -oE '30000 \+ commitCount - [0-9]+' KernelSU/manager/build.gradle.kts 2>/dev/null | grep -oE '[0-9]+$' | head -1)"
-          echo "== Rumus manager: 30000 + commit - ${OFS:-93} (${OFS:+dibaca dari build.gradle.kts}${OFS:-cadangan}) =="
-          MGR_CODE=$((30000 + CNT - ${OFS:-93}))
+          MGR_CODE=$((30000 + CNT - 93))
           DRV_OLD="$(grep -oE 'DKSU_VERSION=[0-9]+' KernelSU/kernel/Makefile | head -1 | cut -d= -f2)"
           MIN_K="$(grep -oE 'MINIMAL_SUPPORTED_KERNEL = [0-9]+' KernelSU/manager/app/src/main/java/me/weishu/kernelsu/Natives.kt | grep -oE '[0-9]+$' | head -1)"
           echo "== Versi: manager versionCode=${MGR_CODE} (commit=${CNT}), driver Makefile=${DRV_OLD:-?}, minimal kernel yang didukung manager=${MIN_K:-?} =="
           DRV_FINAL="$DRV_OLD"
-          if [ -n "${KSU_DRV_OVERRIDE:-}" ]; then
-            case "$KSU_DRV_OVERRIDE" in *[!0-9]*) echo "::error::ksu_driver_version harus angka: '${KSU_DRV_OVERRIDE}'"; exit 1;; esac
-            if [ -n "$MIN_K" ] && [ "$KSU_DRV_OVERRIDE" -lt "$MIN_K" ]; then
-              echo "::error::ksu_driver_version (${KSU_DRV_OVERRIDE}) di bawah minimal manager (${MIN_K})"; exit 1
-            fi
-            sed -i -E "s/DKSU_VERSION=[0-9]+/DKSU_VERSION=${KSU_DRV_OVERRIDE}/" KernelSU/kernel/Makefile
-            grep -q "DKSU_VERSION=${KSU_DRV_OVERRIDE}" KernelSU/kernel/Makefile || { echo "::error::gagal menetapkan KSU_VERSION"; exit 1; }
-            DRV_FINAL="$KSU_DRV_OVERRIDE"
-            echo "::notice::Versi driver ditetapkan ${DRV_OLD} -> ${DRV_FINAL} (ksu_driver_version; manager commit ini = ${MGR_CODE})"
-          elif [ "$KSU_SYNC_VERSION" = "true" ]; then
+          if [ "$KSU_SYNC_VERSION" = "true" ]; then
             if [ -n "$MIN_K" ] && [ "$MGR_CODE" -lt "$MIN_K" ]; then
               echo "::warning::versionCode manager (${MGR_CODE}) < minimal kernel (${MIN_K}); versi driver dibiarkan ${DRV_OLD}"
             else
@@ -1889,13 +1819,7 @@ jobs:
           if [ "$SUSFS_ENABLE" = "true" ] && [ "${SUSFS_GLUE:-no}" != "no" ]; then
             grep -q susfs_add_sus_type "$D/sepolicy.c" && grep -q susfs_add_sus_avd_allowed_by_type "$D/sepolicy.c" \
               || { echo "::error::hook SUSFS di sepolicy.c tidak ada"; exit 1; }
-            if ! grep -q susfs_set_batch_sid "$D/rules.c"; then
-              if [ "${SUSFS_GLUE}" = "patch-xxksu" ]; then
-                echo "::error::susfs_set_batch_sid tidak dipanggil di rules.c"; exit 1
-              else
-                echo "::warning::susfs_set_batch_sid tidak ada di rules.c (glue ${SUSFS_GLUE}: SUSFS bawaan xxKSU commit ini, nama hook bisa berbeda)"
-              fi
-            fi
+            grep -q susfs_set_batch_sid "$D/rules.c" || { echo "::error::susfs_set_batch_sid tidak dipanggil di rules.c"; exit 1; }
           else
             echo "SUSFS nonaktif / sisi-KernelSU tidak terpasang: pemeriksaan hook SUSFS dilewati"
           fi
@@ -2240,12 +2164,6 @@ jobs:
             else
               echo "::warning::KSU_NOPRINTK tidak ada di Kconfig xxKSU ${KSU_LABEL:-$KSU_REF}"
             fi
-          fi
-
-          if [ "$KSU_STEALTH" = "true" ]; then
-            # /proc/config.gz membuka CONFIG_KSU*/SUSFS/NOMOUNT ke aplikasi pendeteksi
-            scripts/config --file out/.config -d IKCONFIG_PROC
-            echo "::notice::KSU_STEALTH: IKCONFIG_PROC dimatikan (/proc/config.gz tidak ada)"
           fi
 
           # --- NoMount v2.2.0 (built-in) ---
