@@ -1,0 +1,2564 @@
+name: Whyred Kernel 4.19 - xxKSU + NoMount + CIP
+
+# Simpan file ini di: .github/workflows/xxksu.yml
+# Jalankan dari tab Actions -> "Whyred Kernel 4.19 - xxKSU + NoMount + CIP" -> Run workflow
+#
+# Metode root : xxKSU (backslashxx/KernelSU) = fork KernelSU dengan driver "upstream compliant" untuk Linux 3.0 ~ 5.4+.
+#               Built-in (CONFIG_KSU=y). Hook dipasang DRIVER sendiri: ARM64 branch-link hijack (default, disarankan 4.19+)
+#               atau syscall table (input ksu_hook_mode) + LSM hook. Tidak ada patch hook di sumber kernel.
+# SUSFS       : v2.4.0 dari JackA1ltman/NonGKI_Kernel_Build_2nd (patch kernel-side 4.19, file patches/susfs_patch_to_4.19.patch di repo ini)
+#               + 10 opsi CONFIG_KSU_SUSFS_* diaktifkan (input enable_susfs). Sisi KernelSU = patches/10_enable_susfs_for_ksu.patch.
+#               PERINGATAN: patch sisi-KernelSU itu dibuat untuk KernelSU tiann/OriginSU (Kbuild multi-berkas). xxKSU di-build sebagai
+#               SATU unit (ksu.o), jadi patch itu kemungkinan besar TIDAK cocok. Langkah "Pasang sisi KernelSU untuk SUSFS" memeriksanya
+#               di awal (sebelum build 30 menit) dan berhenti dengan penjelasan, kecuali input susfs_require_ksu_glue dimatikan
+#               (SUSFS ikut terkompilasi tetapi TIDAK aktif/tidak bisa dikontrol dari userspace).
+# fgetpriority: modul uid-filter aerath-stuff/fgetpriority, di-compile BUILT-IN (drivers/fgetpriority, bool), input enable_fgetpriority.
+#               SELinux: kernel/selinux diambil dari ujung master (input ksu_selinux_master, default aktif); sisa driver tetap di tag.
+#               Bila master identik dengan tag, tidak ada yang berubah (dicatat di log).
+#               MANAGER: pakai APK manager dari rilis xxKSU yang SAMA dengan ksu_ref (tag v3.3.1-50), atau bangun dari zip sumber yang sama.
+#               Manager buatan repo ini ditandatangani manager/dummy.keystore (kunci PUBLIK, sertifikat 0x363 / 4359c171...); driver
+#               sudah menerimanya (apk_sign.c). Driver juga menerima kunci KernelSU resmi, KOWX712, dan midori01.
+#               Kecocokan driver<->manager: UAPI harus sama (6 = 6, dicek di log) dan versi driver >= MINIMAL_SUPPORTED_KERNEL manager.
+#               Input ksu_sync_version menyamakan angka versi driver dengan versionCode manager (30000 + jumlah commit - pengurang yang dibaca dari manager/build.gradle.kts, saat ini 92).
+# NoMount     : v2.3.0-720 (maxsteeel/nomount) built-in (CONFIG_NOMOUNT=y) lewat setup.sh resmi dari tag. Modul metamodule di perangkat
+#               harus ikut v2.3.0 (driver dan modul dirilis berpasangan).
+# Kernel base : source tree di-merge dengan upstream CIP (linux-4.19.y-cip) SEBELUM patch lain (input merge_cip, default aktif),
+#               lalu bump localversion-st dan cherry-pick 3 commit Maya Kernel.
+# Toolchain   : AOSP Clang r547379 (clang 20.0.0). LTO mengikuti input lto_mode (default full, fallback otomatis).
+# Tree source TIDAK boleh membawa root/SUSFS bawaan: workflow berhenti jika terdeteksi.
+#
+# ANTI-BOCOR (input stealth, default aktif): KSU_NOPRINTK=y (dmesg tidak memuat log KernelSU), KSU_SUSFS_ENABLE_LOG=n,
+#               IKCONFIG_PROC=n (/proc/config.gz tidak membuka CONFIG_KSU*/SUSFS/NOMOUNT).
+# VERSI       : input ksu_driver_version (default 32730) menetapkan angka versi driver = versionCode manager dari rilis xx v3.3.1-50
+#               (APK di halaman rilis backslashxx/KernelSU tag v3.3.1-50), supaya manager itu tampil sama dengan kernel. Hanya angka versi.
+#               APK rilis tiann (KernelSU_v3_3_1-50-g64833c00, sertifikat 0x33b) juga diterima driver, tetapi bukan pasangan xx.
+# KOMIT xxKSU : input ksu_run_id (default kosong; default ksu_ref = ec964a92) = ID Actions run backslashxx/KernelSU; workflow membaca head_sha run itu lewat
+#               API GitHub dan memakai commit tersebut apa adanya (SELinux master tidak ditimpa). Kosongkan ksu_run_id untuk memakai ksu_ref.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_run_id:
+        description: "ID Actions run backslashxx/KernelSU (angka di akhir URL .../actions/runs/<ID>). Bila diisi, commit run itu (head_sha) dipakai dan MENGGANTIKAN ksu_ref. Kosongkan untuk memakai ksu_ref."
+        default: ""
+        required: false
+        type: string
+      ksu_ref:
+        description: "Tag ATAU hash commit xxKSU (backslashxx/KernelSU). Dipakai hanya bila ksu_run_id kosong. Default = commit ec964a92 (manager 32736, 6 commit setelah v3.3.1-50)."
+        default: "ec964a920c39dd8d1c2a4cfaf53550481d56645d"
+        required: true
+        type: string
+      stealth:
+        description: "Mode senyap (anti-bocor): printk KernelSU dibungkam (KSU_NOPRINTK), log SUSFS dimatikan, /proc/config.gz dimatikan. Matikan hanya untuk debug."
+        type: boolean
+        default: true
+      ksu_selinux_master:
+        description: "Ambil folder kernel/selinux dari ujung master xxKSU (commit SELinux terbaru sesudah tag). Sisa driver tetap di tag. Matikan bila kompilasi gagal karena file SELinux master butuh perubahan lain di luar folder itu."
+        type: boolean
+        default: true
+      ksu_driver_version:
+        description: "Angka versi driver KernelSU yang tampil di manager. Default 32730 = versionCode manager dari rilis xx v3.3.1-50 (https://github.com/backslashxx/KernelSU/releases/tag/v3.3.1-50, ditandatangani dummy.keystore, diterima driver). Jangan dicampur dengan APK rilis tiann (g64833c00) kecuali memang disengaja. Mengalahkan ksu_sync_version. Kosongkan untuk memakai ksu_sync_version (menyamakan dengan manager yang dibangun dari commit ini, mis. 32736 untuk ec964a92). Hanya mengubah angka versi, bukan kode driver."
+        default: "32730"
+        required: false
+        type: string
+      ksu_sync_version:
+        description: "Samakan angka versi driver (KSU_VERSION) dengan versionCode manager dari tag yang sama (30000 + jumlah commit git - pengurang dari build.gradle.kts). Matikan untuk memakai angka bawaan Makefile (32730)."
+        type: boolean
+        default: true
+      ksu_hook_mode:
+        description: "Cara hook xxKSU. branch_link = ARM64 branch-link hijack (default, disarankan untuk 4.19+; bila gagal pada satu simbol, otomatis jatuh ke syscall table untuk simbol itu). syscall_table = tamper sys_call_table (disarankan untuk 3.0 ~ 4.14)."
+        type: choice
+        options: [branch_link, syscall_table]
+        default: branch_link
+      kernel_repo:
+        description: "Repo source kernel"
+        default: "https://github.com/user-why-red/android_kernel_xiaomi_sdm660_419"
+        required: true
+      merge_cip:
+        description: "Merge upstream CIP (linux-4.19.y-cip: 4.19.325 + backport keamanan CIP) ke tree sebelum patch lain. Konflik diselesaikan dengan versi tree. Butuh riwayat git upstream di tree; bila tidak ada, build berhenti dengan pesan jelas (matikan input ini untuk melewati)."
+        type: boolean
+        default: true
+      cip_commit:
+        description: "Kunci commit CIP (hash). Kosong = ujung terbaru linux-4.19.y-cip setiap kali build dijalankan (default, selalu commit terbaru). Isi hash untuk build yang bisa diulang persis sama."
+        default: ""
+        type: string
+      st_version:
+        description: "Nomor versi source kernel (file localversion-st di root source). 21 = -st21, tampil di uname -r, contoh 4.19.325-st21-kaizen."
+        default: "21"
+        required: true
+        type: string
+      merge_maya:
+        description: "Cherry-pick 3 commit Maya Kernel (anythinganywantanywere/android_kernel_xiaomi_sdm660_419: 93669a2, 7058745, 76f94db) ke tree, sesudah merge CIP. Konflik = build berhenti dengan daftar file konflik."
+        type: boolean
+        default: true
+      kernel_branch:
+        description: "Branch source kernel. Default 'back' = branch dengan dukungan dynamic/retrofit partition (harus bersih dari root/SUSFS bawaan)"
+        default: "back"
+        required: true
+      defconfig:
+        description: "Defconfig"
+        default: "vendor/whyred-perf_defconfig"
+        required: true
+      kernel_name:
+        description: "Nama kernel (untuk nama zip & AnyKernel)"
+        default: "kaizen"
+        required: true
+      enable_nomount:
+        description: "Pasang NoMount v2.3.0-720 (built-in). Matikan untuk build pembanding tanpa NoMount."
+        type: boolean
+        default: true
+      enable_susfs:
+        description: "Integrasikan SUSFS Jack v2.4.0 (patch kernel-side, tertanam di workflow ini) dan aktifkan 10 opsi CONFIG_KSU_SUSFS_*."
+        type: boolean
+        default: true
+      susfs_kernel_patch:
+        description: "Path patch SUSFS kernel-side 4.19 (Jack), tertanam di workflow ini."
+        default: "patches/susfs_patch_to_4.19.patch"
+        type: string
+      susfs_ksu_patch:
+        description: "Path patch sisi-KernelSU (10_enable_susfs_for_ksu.patch) di repo workflow ini."
+        default: "patches/10_enable_susfs_for_ksu.patch"
+        type: string
+      susfs_require_ksu_glue:
+        description: "Hentikan build bila sisi-KernelSU SUSFS tidak bisa dipasang ke xxKSU (disarankan, gagal cepat di awal). Matikan hanya untuk uji: SUSFS ikut terkompilasi tetapi TIDAK aktif."
+        type: boolean
+        default: true
+      enable_fgetpriority:
+        description: "Pasang fgetpriority (aerath-stuff) built-in: sembunyikan hasil getpriority/setpriority/ioprio antar-aplikasi."
+        type: boolean
+        default: true
+      fgetpriority_ref:
+        description: "Commit/tag aerath-stuff/fgetpriority. Default = commit be4ea47 (v0.0.4). Kosong = ujung branch default (terbaru)."
+        default: "be4ea47fa651c80a068e477d5a3627270b7bd683"
+        type: string
+      lto_mode:
+        description: "Mode LTO. full (default, resep tree: Full LTO + Polly; jika ditolak Kconfig otomatis coba ThinLTO lalu tanpa LTO + diagnosis di log). thin = ThinLTO. none = tanpa LTO."
+        type: choice
+        options: [full, thin, none]
+        default: full
+      enable_memcg_psi:
+        description: "Default MATI = persis Starlight: Android Simple LMK aktif, MEMCG + PSI mati (keduanya bentrok di Kconfig, tidak bisa aktif bersamaan). Nyalakan hanya jika ingin MEMCG + PSI (Simple LMK otomatis mati)."
+        type: boolean
+        default: false
+      disable_kernel_panic:
+        description: "Matikan panic otomatis bawaan kernel (PANIC_ON_OOPS, PANIC_TIMEOUT, softlockup/hung-task/hardlockup panic). Dengan ini aplikasi tweak (mis. LSpeed > Kernel panic) tidak lagi membaca kernel sebagai 'panic menyala' setelah reboot. Matikan input ini bila ingin kernel tetap panic/reboot sendiri saat oops (untuk debug, ramoops)."
+        type: boolean
+        default: false
+      release:
+        description: "Upload zip ke GitHub Release?"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  TZ: Asia/Jakarta
+  ARCH: arm64
+  SUBARCH: arm64
+
+  # Nama kernel yang tampil di manager & Info ponsel (uname -r), contoh: 4.19.325-kaizen (mengikuti input kernel_name)
+  KERNEL_LOCALVERSION: "-${{ inputs.kernel_name }}"
+
+  # --- Toolchain: sama dengan kernel Starlight (AOSP Clang r547379 = clang 20.0.0) ---
+  # CLANG_REV      : nama folder prebuilt di repo prebuilts/clang/host/linux-x86.
+  # CLANG_BRANCHES : branch yang dicoba berurutan sampai folder CLANG_REV ditemukan.
+  CLANG_REV: "clang-r547379"
+  CLANG_BRANCHES: "android16-release main"
+
+  # --- LTO + Polly (Polly hanya aktif bila toolchain mendukung) ---
+  # Hanya diaktifkan bila simbol Kconfig / flag compiler-nya didukung tree & toolchain; sisanya dilewati dengan peringatan di log.
+  OFFICIAL_OPTS: "true"
+  LTO_MODE: ${{ inputs.lto_mode || 'full' }}
+
+  # --- xxKSU (backslashxx/KernelSU), dipasang dengan clone + checkout tag ---
+  KSU_REPO: https://github.com/backslashxx/KernelSU
+  KSU_REF: ${{ inputs.ksu_ref || 'ec964a920c39dd8d1c2a4cfaf53550481d56645d' }}
+  KSU_RUN_ID: ${{ inputs.ksu_run_id }}
+  KSU_SELINUX_MASTER: ${{ inputs.ksu_selinux_master == false && 'false' || 'true' }}
+  KSU_HOOK_MODE: ${{ inputs.ksu_hook_mode || 'branch_link' }}
+  KSU_SYNC_VERSION: ${{ inputs.ksu_sync_version == false && 'false' || 'true' }}
+  KSU_DRV_OVERRIDE: ${{ inputs.ksu_driver_version }}
+  ENABLE_MEMCG_PSI: ${{ inputs.enable_memcg_psi == true && 'true' || 'false' }}
+
+  # --- Upstream CIP (merge ke tree sebelum patch lain) ---
+  CIP_MERGE: ${{ inputs.merge_cip == false && 'false' || 'true' }}
+  CIP_REPO: https://git.kernel.org/pub/scm/linux/kernel/git/cip/linux-cip.git
+  # Mirror resmi CIP (GitLab), dicoba bila git.kernel.org tidak terjangkau dari runner (pisahkan dengan spasi bila lebih dari satu).
+  CIP_REPO_MIRRORS: "https://gitlab.com/cip-project/cip-kernel/linux-cip.git"
+  CIP_BRANCH: linux-4.19.y-cip
+  # Kosong = ujung branch terbaru. Isi (input cip_commit) = kunci ke hash tertentu.
+  CIP_PIN: ${{ inputs.cip_commit }}
+  # Area yang dikustomisasi vendor/Starlight: SETELAH merge dikembalikan ke versi tree. Perubahan CIP di sini ditulis untuk kode
+  # upstream polos dan tidak cocok dengan kode tree (terbukti: schedutil up/down_rate_limit_us, glink chinfo, mbcache e_flags).
+  CIP_KEEP_TREE: "kernel/sched drivers/rpmsg include/linux/rpmsg.h include/linux/rpmsg fs/mbcache.c include/linux/mbcache.h fs/ext4/xattr.c fs/ext4/xattr.h fs/ext2/xattr.c drivers/soc/qcom drivers/staging drivers/gpu/msm drivers/media/platform/msm techpack arch/arm64/boot/dts arch/arm64/configs"
+
+  # --- Versi source kernel (localversion-st) ---
+  ST_VERSION: ${{ inputs.st_version || '21' }}
+
+  # --- Commit Maya Kernel (di-cherry-pick sesudah merge CIP; urutan otomatis menurut tanggal commit) ---
+  MAYA_MERGE: ${{ inputs.merge_maya == false && 'false' || 'true' }}
+  MAYA_REPO: https://github.com/anythinganywantanywere/android_kernel_xiaomi_sdm660_419
+  MAYA_COMMITS: "93669a2a3dedcc238eae8085b90bddcd470e43c2 7058745cc9e1fa8b4f7d5afce748bda2c10c006e 76f94db92c4d0bd067934fa5c252049b14d9f324"
+
+  # --- NoMount (built-in, di-pin ke tag rilis v2.3.0-720) ---
+  NOMOUNT_TAG: v2.3.0-720
+  NOMOUNT_ENABLE: ${{ inputs.enable_nomount == false && 'false' || 'true' }}
+
+  # --- SUSFS (Jack v2.4.0, kernel-side) + 10 opsi; sisi-KernelSU lewat patch 10_enable ---
+  SUSFS_ENABLE: ${{ inputs.enable_susfs == false && 'false' || 'true' }}
+  SUSFS_KERNEL_PATCH: ${{ inputs.susfs_kernel_patch || 'patches/susfs_patch_to_4.19.patch' }}
+  SUSFS_KSU_PATCH: ${{ inputs.susfs_ksu_patch || 'patches/10_enable_susfs_for_ksu.patch' }}
+  # Mode senyap: log SUSFS dimatikan dan printk KernelSU dibungkam (dmesg tidak membocorkan SUSFS/KernelSU). 'false' untuk debug.
+  KSU_STEALTH: ${{ inputs.stealth == false && 'false' || 'true' }}
+  SUSFS_REQUIRE_GLUE: ${{ inputs.susfs_require_ksu_glue == false && 'false' || 'true' }}
+  SUSFS_OPTS: "KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP KSU_SUSFS_PRIORITY_UID_FILTER"
+
+  # --- fgetpriority (aerath-stuff), built-in ---
+  FGP_ENABLE: ${{ inputs.enable_fgetpriority == false && 'false' || 'true' }}
+  FGP_REPO: https://github.com/aerath-stuff/fgetpriority
+  FGP_REF: ${{ inputs.fgetpriority_ref }}
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Bebaskan ruang disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
+
+      - name: Install dependensi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev ccache zip unzip \
+            lz4 cpio xz-utils python3 curl git lld \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Clone source kernel
+        run: |
+          set -eo pipefail
+          # Ulangi clone bila koneksi terputus (mis. "early EOF" / "invalid index-pack output")
+          ok=0
+          for n in 1 2 3 4 5; do
+            rm -rf kernel
+            if git -c http.postBuffer=524288000 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=120 \
+                 clone --depth 1 -b "${{ inputs.kernel_branch }}" "${{ inputs.kernel_repo }}" kernel; then
+              ok=1; break
+            fi
+            echo "::warning::clone percobaan $n/5 gagal"; sleep $((n*15))
+          done
+          [ "$ok" = 1 ] || { echo "::error::clone ${{ inputs.kernel_repo }} gagal setelah 5 percobaan"; exit 1; }
+          git -C kernel log -1 --format='Source: %h %s'
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' kernel/Makefile
+          test -f "kernel/arch/arm64/configs/${{ inputs.defconfig }}"
+
+      - name: Integrasikan upstream CIP (linux-4.19.y-cip)
+        if: ${{ env.CIP_MERGE == 'true' }}
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          git config user.name "ci"; git config user.email "ci@local"
+          echo "== Sebelum merge =="
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) ' Makefile
+          git log -1 --format='Tree: %h %s (%cd)'
+          # Ulangi perintah jaringan yang gagal (git.kernel.org kadang timeout dari runner GitHub)
+          retry() { local n; for n in 1 2 3 4 5; do "$@" && return 0; echo "::warning::percobaan $n/5 gagal: $*"; sleep $((n*20)); done; return 1; }
+          # Clone dangkal tidak punya merge-base; ambil riwayat penuh (hanya mengunduh yang belum ada).
+          if [ -f .git/shallow ]; then
+            echo "Clone dangkal -> ambil riwayat penuh"
+            retry git fetch -q --unshallow origin
+          fi
+          # git.kernel.org kadang tidak bisa dijangkau dari runner GitHub ("Failed to connect ... Connection timed out").
+          # Coba alamat utama lalu mirror bergantian. Tiap alamat dites dulu dengan ls-remote (maks 45 detik) supaya satu
+          # alamat yang mati tidak menghabiskan belasan menit seperti sebelumnya (5 x ~135 detik + jeda).
+          CIP_OK=""
+          for round in 1 2 3; do
+            for U in "$CIP_REPO" $CIP_REPO_MIRRORS; do
+              echo "== CIP: coba $U (putaran $round/3) =="
+              if ! timeout 45 git ls-remote --exit-code --heads "$U" "refs/heads/${CIP_BRANCH}" >/dev/null 2>&1; then
+                echo "::warning::CIP tidak terjangkau / branch ${CIP_BRANCH} tidak ada di: $U"; continue
+              fi
+              git remote remove cip 2>/dev/null || true
+              git remote add cip "$U"
+              if timeout 1500 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=90 fetch -q --no-tags cip "+refs/heads/${CIP_BRANCH}:refs/remotes/cip/${CIP_BRANCH}"; then
+                CIP_OK="$U"; break 2
+              fi
+              echo "::warning::fetch CIP dari $U gagal"
+            done
+            [ "$round" -lt 3 ] && sleep $((round*20))
+          done
+          [ -n "$CIP_OK" ] \
+            || { echo "::error::CIP tidak bisa diambil dari git.kernel.org maupun mirror (${CIP_REPO_MIRRORS}) setelah 3 putaran. Jalankan ulang workflow nanti, atau matikan input merge_cip."; exit 1; }
+          echo "::notice::CIP diambil dari: $CIP_OK"
+          CIP_REF="refs/remotes/cip/${CIP_BRANCH}"
+          if [ -n "${CIP_PIN}" ]; then
+            git rev-parse -q --verify "${CIP_PIN}^{commit}" >/dev/null \
+              || { echo "::error::cip_commit '${CIP_PIN}' tidak ditemukan di ${CIP_BRANCH}"; exit 1; }
+            CIP_REF="$(git rev-parse "${CIP_PIN}^{commit}")"
+            echo "::notice::CIP dikunci ke ${CIP_REF:0:8} (bukan ujung branch)"
+          fi
+          git log -1 --format='CIP:  %h %s (%cd)' "$CIP_REF"
+          echo "CIP_COMMIT=$(git rev-parse "$CIP_REF")" >> "$GITHUB_ENV"
+
+          BASE="$(git merge-base HEAD "$CIP_REF" || true)"
+          if [ -z "$BASE" ]; then
+            echo "::error::Tree ${{ inputs.kernel_branch }} tidak berbagi riwayat git dengan ${CIP_BRANCH} (riwayat kernel upstream di-squash atau dipangkas), jadi merge tidak mungkin. Matikan input merge_cip, atau kirim log ini."
+            exit 1
+          fi
+          echo "merge-base: $(git log -1 --format='%h %s (%cd)' "$BASE")"
+          read -r AHEAD BEHIND < <(git rev-list --left-right --count HEAD..."$CIP_REF")
+          echo "Tree punya ${AHEAD} commit di luar CIP; CIP punya ${BEHIND} commit yang belum ada di tree"
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "::notice::Tidak ada commit CIP baru; tree sudah memuat seluruh ${CIP_BRANCH}"
+            echo "CIP_MERGED=sudah-sama" >> "$GITHUB_ENV"; exit 0
+          fi
+          git diff --shortstat "$BASE" "$CIP_REF" || true
+
+          PRE="$(git rev-parse HEAD)"
+          set +e
+          git merge --no-edit --no-ff -X ours -m "Merge ${CIP_BRANCH} (CIP)" "$CIP_REF" >/tmp/cip-merge.log 2>&1
+          RC=$?
+          set -e
+          tail -5 /tmp/cip-merge.log || true
+          if [ "$RC" -ne 0 ]; then
+            # -X ours hanya menyelesaikan konflik isi. Konflik struktur (modify/delete, rename) dipilih ke sisi tree.
+            git diff --name-only --diff-filter=U > /tmp/cip-conflicts.txt || true
+            echo "== Konflik yang diselesaikan ke versi tree ($(wc -l < /tmp/cip-conflicts.txt)) =="
+            head -60 /tmp/cip-conflicts.txt
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              if git ls-files -u -- "$f" | awk '{print $3}' | grep -qx 2; then
+                git checkout --ours -- "$f" && git add -- "$f"
+              else
+                git rm -q -f -- "$f"
+              fi
+            done < /tmp/cip-conflicts.txt
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              git merge --abort || true
+              echo "::error::Konflik merge CIP tidak terselesaikan otomatis (lihat daftar di atas)."; exit 1
+            fi
+            git commit -q --no-edit
+          fi
+          # Kembalikan area kustom vendor ke versi tree (file tambahan dari CIP di area itu dibuang).
+          for P in $CIP_KEEP_TREE; do
+            git cat-file -e "$PRE:$P" 2>/dev/null || continue
+            ADDED="$(git diff --no-renames --name-only --diff-filter=A "$PRE" HEAD -- "$P" || true)"
+            if [ -n "$ADDED" ]; then echo "$ADDED" | xargs -r git rm -q -f --; fi
+            git checkout "$PRE" -- "$P"
+          done
+          if ! git diff --cached --quiet; then
+            echo "== File yang dikembalikan ke versi tree: $(git diff --cached --name-only | wc -l) =="
+            git diff --cached --name-only | head -40
+            git commit -q -m "Keep tree version for vendor-customized paths (CIP merge)"
+          fi
+          # Hanya baris yang DITAMBAHKAN oleh merge yang diperiksa: tree bawaan sudah membawa penanda konflik lama
+          # (hfi_venus.c, test_overflow.c; file yang tidak ikut dibangun) dan itu bukan dari merge ini.
+          MARK="$(git diff "$PRE" HEAD -- '*.c' '*.h' '*.S' '*Makefile*' '*Kconfig*' '*.dtsi' '*.dts' | grep -E '^\+(<<<<<<<|>>>>>>>) ' | head -20 || true)"
+          if [ -n "$MARK" ]; then echo "$MARK"; echo "::error::Penanda konflik baru tertinggal setelah merge CIP"; exit 1; fi
+          OLDMARK="$(git grep -lE '^(<<<<<<<|>>>>>>>) ' -- '*.c' '*.h' || true)"
+          [ -z "$OLDMARK" ] || echo "::notice::Penanda konflik bawaan tree (bukan dari merge): $(echo $OLDMARK)"
+
+          echo "CIP_MERGED=ya" >> "$GITHUB_ENV"
+          echo "== Sesudah merge =="
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) ' Makefile
+          git diff --shortstat "$PRE" HEAD || true
+          echo "::notice::Upstream CIP ${CIP_BRANCH} @ $(git rev-parse --short=8 "$CIP_REF") di-merge ke tree"
+
+      - name: Bump versi source kernel (localversion-st)
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          git config user.name "ci"; git config user.email "ci@local"
+          case "$ST_VERSION" in ''|*[!0-9]*) echo "::error::st_version harus angka (dapat: '$ST_VERSION')"; exit 1 ;; esac
+          if [ -s localversion-st ]; then
+            echo "Sebelum: $(cat localversion-st)"
+            # Ganti angka terakhir di file, format yang ada (mis. -st20) dipertahankan
+            if grep -Eq '[0-9]' localversion-st; then
+              sed -i -E "s/[0-9]+([^0-9]*)\$/${ST_VERSION}\1/" localversion-st
+            else
+              printf -- '-st%s\n' "$ST_VERSION" > localversion-st
+            fi
+          else
+            printf -- '-st%s\n' "$ST_VERSION" > localversion-st
+          fi
+          echo "Sesudah: $(cat localversion-st)"
+          grep -q "$ST_VERSION" localversion-st || { echo "::error::bump localversion-st gagal"; exit 1; }
+          git add -f localversion-st
+          git diff --cached --quiet || git commit -q -m "Bump version to st${ST_VERSION}"
+          echo "::notice::Versi source: st${ST_VERSION}"
+
+      - name: Integrasikan commit Maya Kernel (cherry-pick)
+        if: ${{ env.MAYA_MERGE == 'true' }}
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          git config user.name "ci"; git config user.email "ci@local"
+          git remote remove maya 2>/dev/null || true
+          git remote add maya "$MAYA_REPO"
+          # PENTING: ketiga commit di-fetch SEKALIGUS. Jika di-fetch satu per satu dengan --depth=2,
+          # commit yang jadi parent commit lain (93669a2 = parent 76f94db) berubah jadi batas shallow
+          # tanpa parent, sehingga cherry-pick-nya dianggap menambah seluruh tree dan konflik di mana-mana.
+          # shellcheck disable=SC2086
+          retry() { local n; for n in 1 2 3; do "$@" && return 0; echo "::warning::percobaan $n/3 gagal: $*"; sleep $((n*10)); done; return 1; }
+          retry git fetch -q --no-tags --depth=2 maya $MAYA_COMMITS \
+            || { echo "::error::Gagal mengambil commit Maya Kernel dari $MAYA_REPO"; exit 1; }
+          for C in $MAYA_COMMITS; do
+            git rev-parse -q --verify "$C^{commit}" >/dev/null \
+              || { echo "::error::Commit $C tidak ada setelah fetch"; exit 1; }
+            # Sanity check: tiap commit harus punya parent (kalau tidak, cherry-pick akan salah)
+            git rev-parse -q --verify "$C^" >/dev/null \
+              || { echo "::error::Commit $C tidak punya parent setelah fetch (riwayat shallow terpotong)"; exit 1; }
+            echo "  $(git diff --shortstat "$C^" "$C") <- ${C:0:8}"
+          done
+          # Urut dari yang terlama (parent dulu): 93669a2 adalah parent 76f94db
+          ORDER="$(git rev-list --no-walk=sorted --reverse $MAYA_COMMITS)"
+          echo "== Urutan cherry-pick =="
+          for C in $ORDER; do git log -1 --format='%h %s (%cd)' "$C"; done
+          PRE_MAYA="$(git rev-parse HEAD)"
+          for C in $ORDER; do
+            if git merge-base --is-ancestor "$C" HEAD 2>/dev/null; then
+              echo "Sudah ada di tree, dilewati: ${C:0:8}"; continue
+            fi
+            echo "== cherry-pick ${C:0:8} =="
+            if ! git cherry-pick -x "$C" >/tmp/maya-pick.log 2>&1; then
+              if git diff --cached --quiet && [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+                git cherry-pick --skip >/dev/null 2>&1 || git cherry-pick --abort || true
+                echo "::warning::${C:0:8} kosong (perubahan sudah ada di tree), dilewati"; continue
+              fi
+              CONF="$(git diff --name-only --diff-filter=U)"
+              if [ -n "$CONF" ] && ! echo "$CONF" | grep -qv '^arch/arm64/configs/'; then
+                # Konflik hanya di defconfig (isinya beda dengan tree Maya): pakai versi tree, lalu terapkan opsi CONFIG yang ditambah commit
+                echo "::warning::${C:0:8}: konflik hanya di defconfig, diselesaikan = versi tree + opsi CONFIG dari commit"
+                for F in $CONF; do
+                  git checkout --ours -- "$F"
+                  git show "$C" -- "$F" | grep -E '^\+(CONFIG_[A-Za-z0-9_]+=|# CONFIG_[A-Za-z0-9_]+ is not set)' | sed 's/^+//' > /tmp/maya-cfg.txt || true
+                  while IFS= read -r L; do
+                    [ -n "$L" ] || continue
+                    SYM="$(echo "$L" | sed -E 's/^# //; s/[ =].*//')"
+                    sed -i -E "/^(# )?${SYM}([= ]|$)/d" "$F"
+                    echo "$L" >> "$F"
+                  done < /tmp/maya-cfg.txt
+                  git add -- "$F"
+                  echo "  opsi dari ${C:0:8} diterapkan ke $F:"; sed 's/^/    /' /tmp/maya-cfg.txt
+                done
+                GIT_EDITOR=true git cherry-pick --continue >/dev/null
+                continue
+              fi
+              tail -40 /tmp/maya-pick.log
+              echo "== File konflik ($(echo "$CONF" | grep -c .)) =="; echo "$CONF" > /tmp/maya-conf.txt; head -60 /tmp/maya-conf.txt || true
+              git cherry-pick --abort || true
+              echo "::error::Cherry-pick ${C:0:8} konflik dengan tree. Beri tahu file konflik di atas, atau matikan input merge_maya."
+              exit 1
+            fi
+          done
+          # Penanda konflik baru tidak boleh tersisa
+          MARK="$(git diff "$PRE_MAYA" HEAD 2>/dev/null | grep -E '^\+(<<<<<<<|>>>>>>>) ' | head -5 || true)"
+          [ -z "$MARK" ] || { echo "$MARK"; echo "::error::Penanda konflik tertinggal"; exit 1; }
+          echo "::notice::Commit Maya Kernel terintegrasi"
+          git log --oneline -5
+
+      - name: Pastikan tree bersih dari root/SUSFS bawaan
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          # Tree harus polos: root lama (ResukiSU/SukiSU/KernelSU dll) dan SUSFS lama bentrok dengan xxKSU + SUSFS baru.
+          FOUND=""
+          for p in fs/susfs.c fs/sus_su.c include/linux/susfs.h include/linux/susfs_def.h include/linux/sus_su.h \
+                   drivers/kernelsu KernelSU; do
+            [ -e "$p" ] && FOUND="$FOUND $p"
+          done
+          HITS="$(git grep -lE 'CONFIG_KSU|ksu_|susfs' -- '*.c' '*.h' 'Kconfig*' 'Makefile' 'arch/arm64/configs' || true)"
+          if [ -n "$FOUND" ] || [ -n "$HITS" ]; then
+            echo "== File/jejak root atau SUSFS lama =="
+            echo "$FOUND"; echo "$HITS"
+            echo "::error::Branch '${{ inputs.kernel_branch }}' sudah membawa root/SUSFS bawaan. Pakai branch bersih, atau kirim log ini untuk menyesuaikan workflow."
+            exit 1
+          fi
+          echo "Tree bersih: tidak ada root/SUSFS bawaan"
+
+      - name: Siapkan patch SUSFS (tertanam di file ini)
+        if: ${{ env.SUSFS_ENABLE == 'true' }}
+        run: |
+          set -eo pipefail
+          # Patch SUSFS (Jack v2.4.0 kernel-side + 10_enable_susfs_for_ksu) ikut tertanam di workflow ini (tar.xz + base64),
+          # jadi TIDAK perlu folder patches/ di repo. Bila repo punya patches/ sendiri, berkas itu yang dipakai (menimpa).
+          mkdir -p "$GITHUB_WORKSPACE/repo"
+          base64 -d <<'B64' | tar -xJ -C "$GITHUB_WORKSPACE/repo"
+          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
+          PvEAAaywA4CAFAT1lW+xxGf7AgAAAAAEWVo=
+          B64
+          ls -la "$GITHUB_WORKSPACE/repo/patches"
+          grep -m1 '^+#define SUSFS_VERSION' "$GITHUB_WORKSPACE/repo/patches/susfs_patch_to_4.19.patch"
+
+      - name: Integrasikan SUSFS Jack (kernel-side, 4.19)
+        if: ${{ env.SUSFS_ENABLE == 'true' }}
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          git config user.name "ci"; git config user.email "ci@local"
+          P="$GITHUB_WORKSPACE/repo/${SUSFS_KERNEL_PATCH}"
+          if [ ! -s "$P" ]; then
+            echo "== Isi folder patches/ di repo workflow =="
+            ls -la "$GITHUB_WORKSPACE/repo/patches" 2>/dev/null || echo "(folder patches/ tidak ada)"
+            echo "::error::File '${SUSFS_KERNEL_PATCH}' tidak ada di repo ini. Commit susfs_patch_to_4.19.patch ke folder patches/ (atau ubah input susfs_kernel_patch)."
+            exit 1
+          fi
+          echo "Patch: ${SUSFS_KERNEL_PATCH} ($(wc -l < "$P") baris, $(grep -c '^diff --git' "$P") berkas)"
+          grep -E '^\+#define SUSFS_VERSION' "$P" || echo "::warning::patch tidak memuat SUSFS_VERSION"
+          if git apply --check "$P" 2>/tmp/susfs-check.err; then
+            git apply --whitespace=nowarn "$P"
+            echo "git apply: bersih"
+          else
+            echo "== git apply --check gagal (konteks tree berbeda dari patch) =="
+            head -40 /tmp/susfs-check.err
+            echo "== Cadangan: patch -p1 dengan fuzz 3 =="
+            patch -p1 --forward --no-backup-if-mismatch -F3 < "$P" 2>&1 | tee /tmp/susfs-patch.log | tail -60 || true
+            REJ="$(find . -name '*.rej' -not -path './.git/*' | sort)"
+            # Hunk vfs_kern_mount() di fs/namespace.c ditolak karena tree ini memakai fs_context
+            # (alloc_vfsmnt ada di vfs_create_mount()). Terapkan manual lalu cek ulang sisa reject.
+            if [ "$REJ" = "./fs/namespace.c.rej" ] && grep -q 'vfs_kern_mount' fs/namespace.c.rej; then
+              echo "== Hunk vfs_kern_mount() ditolak: diterapkan manual =="
+              python3 - <<'PY'
+          import re, sys
+          p = "fs/namespace.c"
+          s = open(p, encoding="utf-8", errors="surrogateescape").read()
+
+          def diag(msg):
+              print("::error::" + msg)
+              lines = s.split("\n")
+              print("== Diagnostik fs/namespace.c: baris vfs_kern_mount / vfs_create_mount / alloc_vfsmnt ==")
+              for i, l in enumerate(lines, 1):
+                  if re.search(r"vfs_kern_mount|vfs_create_mount|alloc_vfsmnt", l):
+                      print("%d: %s" % (i, l))
+              for i, l in enumerate(lines):
+                  if "vfs_create_mount" in l and "EXPORT_SYMBOL" not in l and ";" not in l:
+                      print("== Konteks sekitar baris %d ==" % (i + 1))
+                      print("\n".join(lines[max(0, i - 2):i + 30]))
+                      break
+              sys.exit(1)
+
+          def find_def(fname):
+              pat = r"^[^\n;=]*\b" + fname + r"\s*\([^;{)]*(?:\([^)]*\)[^;{)]*)*\)\s*\n?\s*\{"
+              for m in re.finditer(pat, s, re.M):
+                  if "return" not in m.group(0).split(fname)[0]:
+                      return m
+              return None
+
+          ALLOC = re.compile(r"^[ \t]*mnt[ \t]*=[ \t]*alloc_vfsmnt\(([^;]*)\);[^\n]*\n", re.M)
+          # Kernel lama: alloc_vfsmnt() ada di vfs_kern_mount(). Kernel dengan fs_context (hasil backport/merge):
+          # vfs_kern_mount() hanya memanggil fc_mount() dan alloc_vfsmnt() ada di vfs_create_mount().
+          found = None
+          for fname in ("vfs_kern_mount", "vfs_create_mount"):
+              m = find_def(fname)
+              if not m:
+                  continue
+              a = ALLOC.search(s, m.end())
+              if a and a.start() - m.end() < 1200 and "\n}\n" not in s[m.end():a.start()]:
+                  found = (fname, m, a)
+                  break
+          if not found:
+              diag("'mnt = alloc_vfsmnt(...)' tidak ditemukan di vfs_kern_mount()/vfs_create_mount()")
+          fname, m, a = found
+          if "susfs_alloc_non_unshare_ksu_vfsmnt" in s[m.end():a.start()]:
+              print("%s: sudah ter-patch" % fname); sys.exit(0)
+          arg = " ".join(a.group(1).split())
+          name_expr = arg if "?:" in arg or "?" in arg else (arg + " ?: \"none\"")
+          if "fc->source" in arg:
+              name_expr = "fc->source ?: \"none\""
+          elif arg == "name":
+              name_expr = "name ?:\"none\""
+          pre = (
+          "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+          "\t// - We will just stop checking for ksu process if /sdcard/Android is accessible,\n"
+          "\t//   for the sake of performance\n"
+          "\tif (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {\n"
+          "\t\tif (susfs_is_current_ksu_domain()) {\n"
+          "\t\t\tmnt = susfs_alloc_non_unshare_ksu_vfsmnt(" + name_expr + ");\n"
+          "\t\t\tgoto bypass_orig_flow;\n"
+          "\t\t}\n"
+          "\t}\n"
+          "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+          "\n")
+          post = (
+          "\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+          "bypass_orig_flow:\n"
+          "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n")
+          s = s[:a.start()] + pre + s[a.start():a.end()] + post + s[a.end():]
+          open(p, "w", encoding="utf-8", errors="surrogateescape").write(s)
+          print("%s: hunk SUSFS diterapkan manual (alloc_vfsmnt(%s))" % (fname, arg))
+          PY
+              rm -f fs/namespace.c.rej
+              REJ="$(find . -name '*.rej' -not -path './.git/*' | sort)"
+              grep -q 'bypass_orig_flow' fs/namespace.c || { echo "::error::penerapan manual vfs_kern_mount() gagal"; exit 1; }
+            fi
+            find . -name '*.orig' -not -path './.git/*' -delete
+            if [ -n "$REJ" ]; then
+              echo "== Hunk ditolak =="; echo "$REJ"
+              for f in $REJ; do echo "--- $f"; sed -n '1,80p' "$f"; done
+              echo "::error::Patch SUSFS tidak cocok dengan tree ini (hunk ditolak, daftar di atas). Kirim log ini."
+              exit 1
+            fi
+            grep -E 'fuzz|offset' /tmp/susfs-patch.log | head -20 || true
+          fi
+          for f in fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h; do
+            test -f "$f" || { echo "::error::$f tidak ada setelah patch SUSFS"; exit 1; }
+          done
+          grep -q 'susfs.o' fs/Makefile || { echo "::error::fs/Makefile tidak membangun susfs.o"; exit 1; }
+          SV="$(grep -E '^#define SUSFS_VERSION' include/linux/susfs.h | head -1 | cut -d' ' -f3 | tr -d '"')"
+          echo "SUSFS_VER=${SV}" >> "$GITHUB_ENV"
+          case "$SV" in v2.4.*) ;; *) echo "::warning::SUSFS_VERSION '${SV}' bukan v2.4.x (cek file patch)";; esac
+          # Semua opsi yang dipakai patch harus punya definisi Kconfig (diberikan langkah sisi-KernelSU di bawah)
+          echo "== Opsi CONFIG_KSU_SUSFS_* yang dipakai patch =="
+          grep -rhoE 'CONFIG_KSU_SUSFS[A-Z_]*' fs include kernel block mm security 2>/dev/null | sort -u
+          # Pastikan berkas yang memakai simbol susfs_def.h (mis. fs/stat.c) meng-include-nya
+          python3 - <<'PYINC'
+          import re, subprocess, sys
+          # Berkas yang memakai simbol dari include/linux/susfs_def.h harus meng-include-nya. Patch SUSFS 4.19 tidak
+          # menambahkan include itu di semua berkas (mis. fs/stat.c) sehingga STATX_SUS_KSTAT / susfs_is_current_app_uid
+          # "undeclared". Tambahkan include (dibungkus CONFIG_KSU_SUSFS) bila belum ada.
+          SYM = re.compile(r"\b(STATX_SUS_KSTAT(?:_FUSE)?|susfs_is_current_app_uid|susfs_is_current_proc_umounted|"
+                           r"susfs_set_current_proc_umounted|susfs_is_current_proc_no_su|susfs_set_current_proc_no_su|"
+                           r"TIF_PROC_UMOUNTED|TIF_PROC_NO_SU|AS_FLAGS_SUS_(?:PATH|MOUNT|KSTAT|MAP)|AS_FLAGS_OPEN_REDIRECT|"
+                           r"ND_STATE_(?:LOOKUP|OPEN)_LAST|ND_FLAGS_LOOKUP_LAST)\b")
+          files = subprocess.run(["git", "diff", "--name-only", "HEAD"], capture_output=True, text=True).stdout.split()
+          files += subprocess.run(["git", "ls-files", "--others", "--exclude-standard"], capture_output=True, text=True).stdout.split()
+          fixed = []
+          for f in sorted(set(files)):
+              if not f.endswith(".c") or f == "fs/susfs.c":
+                  continue
+              try:
+                  t = open(f, encoding="utf-8", errors="surrogateescape").read()
+              except OSError:
+                  continue
+              if not SYM.search(t) or re.search(r'#\s*include\s*[<"]linux/susfs(_def)?\.h[>"]', t):
+                  continue
+              lines = t.split("\n")
+              last = -1
+              for i, l in enumerate(lines[:120]):
+                  if re.match(r"\s*#\s*include\s", l):
+                      last = i
+              if last < 0:
+                  print("::warning::%s memakai simbol susfs_def.h tapi tidak ada #include di awal berkas" % f)
+                  continue
+              # lewati bila #include terakhir berada di dalam blok #if ... (cari penutup sederhana)
+              depth = 0
+              for l in lines[:last + 1]:
+                  if re.match(r"\s*#\s*if", l): depth += 1
+                  elif re.match(r"\s*#\s*endif", l): depth -= 1
+              while depth > 0 and last + 1 < len(lines):
+                  last += 1
+                  if re.match(r"\s*#\s*if", lines[last]): depth += 1
+                  elif re.match(r"\s*#\s*endif", lines[last]): depth -= 1
+              lines[last + 1:last + 1] = ["#ifdef CONFIG_KSU_SUSFS", "#include <linux/susfs_def.h>", "#endif // #ifdef CONFIG_KSU_SUSFS"]
+              open(f, "w", encoding="utf-8", errors="surrogateescape").write("\n".join(lines))
+              fixed.append(f)
+          print("include susfs_def.h ditambahkan ke: " + (" ".join(fixed) if fixed else "(tidak ada yang perlu)"))
+          PYINC
+          git add -A
+          git commit -q -m "Integrate SUSFS ${SV} (JackA1ltman NonGKI_Kernel_Build_2nd, 4.19)"
+          echo "::notice::SUSFS ${SV} (kernel-side) terintegrasi"
+
+      - name: Tambal makro SUSFS_LOGI_RL/LOGE_RL untuk build tanpa log (bug patch SUSFS v2.4.0)
+        if: ${{ env.SUSFS_ENABLE == 'true' }}
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          # Patch Jack v2.4.0: di fs/susfs.c, cabang #else (CONFIG_KSU_SUSFS_ENABLE_LOG tidak aktif) hanya mendefinisikan
+          # SUSFS_LOGI dan SUSFS_LOGE, padahal fungsi susfs_add_sus_type() dan susfs_add_sus_avd_allowed_by_type() memakai
+          # SUSFS_LOGI_RL. Hasilnya error "implicit declaration of function 'SUSFS_LOGI_RL'" saat log dimatikan (mode senyap).
+          python3 - <<'PYLOG'
+          import re, sys
+          p = "fs/susfs.c"
+          s = open(p, encoding="utf-8").read()
+          if re.search(r"^#define SUSFS_LOGI_RL\b", s.split("#else", 1)[-1], re.M) and "SUSFS_LOGE_RL(fmt, ...) \n#endif" in s:
+              print("[skip] makro _RL sudah ada di cabang tanpa log"); sys.exit(0)
+          pat = re.compile(r"(#else\n#define SUSFS_LOGI\(fmt, \.\.\.\)[ \t]*\n#define SUSFS_LOGE\(fmt, \.\.\.\)[ \t]*\n)(#endif)")
+          m = pat.search(s)
+          if not m:
+              i = s.find("#define SUSFS_LOGE(fmt")
+              print("::error::blok makro SUSFS_LOG* di fs/susfs.c tidak sesuai dugaan; kirim keluaran ini")
+              print(s[max(0, i - 600):i + 400])
+              sys.exit(1)
+          s = pat.sub(lambda m: m.group(1) + "#define SUSFS_LOGI_RL(fmt, ...) \n#define SUSFS_LOGE_RL(fmt, ...) \n" + m.group(2), s, count=1)
+          open(p, "w", encoding="utf-8").write(s)
+          print("[ok] SUSFS_LOGI_RL / SUSFS_LOGE_RL ditambahkan ke cabang tanpa log")
+          PYLOG
+          grep -n "define SUSFS_LOG" fs/susfs.c
+          git config user.name "ci"; git config user.email "ci@local"
+          git add -A
+          git commit -q -m "SUSFS: define SUSFS_LOGI_RL/LOGE_RL when ENABLE_LOG is off" || true
+          echo "::notice::makro SUSFS_*_RL untuk build tanpa log sudah ada"
+
+      - name: Integrasikan fgetpriority (aerath-stuff, built-in)
+        if: ${{ env.FGP_ENABLE == 'true' }}
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          git config user.name "ci"; git config user.email "ci@local"
+          rm -rf /tmp/fgp
+          git clone -q "$FGP_REPO" /tmp/fgp
+          if [ -n "$FGP_REF" ]; then
+            git -C /tmp/fgp checkout -q "$FGP_REF" \
+              || { echo "::error::fgetpriority_ref '${FGP_REF}' tidak ditemukan di ${FGP_REPO}"; exit 1; }
+          fi
+          FGP_COMMIT="$(git -C /tmp/fgp rev-parse HEAD)"
+          echo "FGP_COMMIT=${FGP_COMMIT}" >> "$GITHUB_ENV"
+          git -C /tmp/fgp log -1 --format='fgetpriority: %h %s'
+          grep -E '^version=' /tmp/fgp/module/module.prop || true
+          for f in main.c routine.h routine_kp.c routine_raw.c arch.h kernel.h arm64_branch_insn.h Makefile Kconfig; do
+            test -f "/tmp/fgp/kernel/$f" || { echo "::error::kernel/$f tidak ada di fgetpriority (struktur repo berubah)"; exit 1; }
+          done
+          rm -rf drivers/fgetpriority; mkdir -p drivers/fgetpriority
+          cp -a /tmp/fgp/kernel/. drivers/fgetpriority/
+          rm -f drivers/fgetpriority/Makefile.ddk drivers/fgetpriority/build_ddk.sh
+          # Built-in saja (kernel ini non-modul): ubah tristate/default m menjadi bool/default y
+          sed -i -E 's/^([[:space:]]*)tristate "uid filter"/\1bool "uid filter (getpriority hiding)"/; s/^([[:space:]]*)default m$/\1default y/' drivers/fgetpriority/Kconfig
+          grep -q 'bool "uid filter' drivers/fgetpriority/Kconfig || { echo "::error::Kconfig fgetpriority gagal diubah ke bool"; cat drivers/fgetpriority/Kconfig; exit 1; }
+          python3 - <<'PY'
+          import re
+          p = 'drivers/Kconfig'
+          s = open(p, encoding='utf-8').read()
+          line = 'source "drivers/fgetpriority/Kconfig"'
+          if line not in s:
+              i = s.rfind('\nendmenu')
+              assert i >= 0, 'endmenu tidak ada di drivers/Kconfig'
+              s = s[:i] + '\n' + line + s[i:]
+              open(p, 'w', encoding='utf-8').write(s)
+          PY
+          grep -q 'fgetpriority/' drivers/Makefile \
+            || printf '\nobj-$(CONFIG_FGETPRIORITY) += fgetpriority/\n' >> drivers/Makefile
+          grep -q 'drivers/fgetpriority/Kconfig' drivers/Kconfig
+          grep -q 'fgetpriority/' drivers/Makefile
+          # Hook memasang cabang baru di tempat find_user() dipanggil oleh sys_getpriority/setpriority/ioprio_*.
+          # find_user() harus tetap fungsi sendiri; LTO bisa meng-inline-nya sehingga titik panggil tidak ditemukan.
+          if grep -qE '^struct user_struct \*find_user\(kuid_t uid\)' kernel/user.c; then
+            sed -i -E 's/^struct user_struct \*find_user\(kuid_t uid\)/noinline struct user_struct *find_user(kuid_t uid)/' kernel/user.c
+            echo "::notice::find_user() ditandai noinline (kernel/user.c)"
+          else
+            grep -n 'find_user' kernel/user.c | head
+            echo "::warning::deklarasi find_user() tidak sesuai dugaan; noinline tidak ditambahkan"
+          fi
+          git add -A
+          git commit -q -m "Add fgetpriority ${FGP_COMMIT:0:8} (built-in)"
+          echo "::notice::fgetpriority ${FGP_COMMIT:0:8} terintegrasi (built-in)"
+
+      - name: Siapkan toolchain (AOSP Clang r547379, sama dengan kernel Starlight)
+        run: |
+          set -eo pipefail
+          GIT_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
+          rm -rf clang aosp-clang
+          OK=""
+          for BR in $CLANG_BRANCHES; do
+            echo "== Ambil ${CLANG_REV} dari branch ${BR} =="
+            # 1) tarball langsung dari googlesource (+archive)
+            rm -rf clang && mkdir -p clang
+            if curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 -o /tmp/clang.tar.gz \
+                 "${GIT_URL}/+archive/refs/heads/${BR}/${CLANG_REV}.tar.gz" \
+               && tar -xzf /tmp/clang.tar.gz -C clang \
+               && [ -x clang/bin/clang ]; then
+              OK="archive:${BR}"; break
+            fi
+            echo "tarball dari branch ${BR} gagal, coba clone parsial"
+            rm -rf clang aosp-clang /tmp/clang.tar.gz
+            # 2) cadangan: clone parsial + sparse-checkout hanya folder CLANG_REV
+            if git clone -q --depth=1 --filter=blob:none --sparse -b "$BR" "$GIT_URL" aosp-clang \
+               && git -C aosp-clang sparse-checkout set "$CLANG_REV" \
+               && [ -x "aosp-clang/${CLANG_REV}/bin/clang" ]; then
+              mv "aosp-clang/${CLANG_REV}" clang && rm -rf aosp-clang
+              OK="git:${BR}"; break
+            fi
+            echo "clone parsial dari branch ${BR} gagal"
+            rm -rf clang aosp-clang
+          done
+          rm -f /tmp/clang.tar.gz
+          if [ -z "$OK" ]; then
+            echo "::error::${CLANG_REV} tidak bisa diambil dari branch (${CLANG_BRANCHES}) di ${GIT_URL}. Cek koneksi/branch, atau ubah CLANG_BRANCHES di blok env."
+            exit 1
+          fi
+          echo "Toolchain diambil lewat: ${OK}"
+          for t in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
+            [ -x "$GITHUB_WORKSPACE/clang/bin/$t" ] || { echo "::error::$t tidak ada di clang/bin"; ls "$GITHUB_WORKSPACE/clang/bin" | head -60; exit 1; }
+          done
+          echo "$GITHUB_WORKSPACE/clang/bin" >> "$GITHUB_PATH"
+          "$GITHUB_WORKSPACE/clang/bin/clang" --version | sed -n '1p'
+          "$GITHUB_WORKSPACE/clang/bin/ld.lld" --version | sed -n '1p'
+          # Kernel Starlight: "Android (13174946, +pgo, +bolt, +lto, +mlgo, based on r547379) clang version 20.0.0"
+          "$GITHUB_WORKSPACE/clang/bin/clang" --version | sed -n '1p' | grep -q 'r547379' \
+            || echo "::warning::versi clang bukan r547379 (cek baris versi di atas)"
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: ~/.ccache
+          key: ccache-whyred-${{ github.run_id }}
+          restore-keys: ccache-whyred-
+
+      - name: Setup xxKSU (backslashxx/KernelSU, tag rilis + SELinux terbaru dari master)
+        # WAJIB di dalam tree kernel: symlink drivers/kernelsu -> ../KernelSU/kernel harus terbentuk di kernel/drivers,
+        # dan langkah sesudahnya (path_umount, kallsyms, Build, upload log) membaca kernel/KernelSU.
+        working-directory: kernel
+        env:
+          GH_API_TOKEN: ${{ github.token }}
+        run: |
+          set -eo pipefail
+          # Langkah sama dengan kernel/setup.sh xxKSU: symlink drivers/kernelsu + entri di drivers/Makefile & drivers/Kconfig.
+          rm -rf KernelSU
+          git clone -q "$KSU_REPO" KernelSU
+          git -C KernelSU fetch -q --tags --force || true
+          # --- Commit dari Actions run (input ksu_run_id): ambil head_sha lewat API publik GitHub ---
+          if [ -n "${KSU_RUN_ID:-}" ]; then
+            echo "== Menentukan commit dari Actions run ${KSU_RUN_ID} =="
+            curl -fsSL --retry 3 --connect-timeout 20 \
+              -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_API_TOKEN}" \
+              "https://api.github.com/repos/backslashxx/KernelSU/actions/runs/${KSU_RUN_ID}" -o /tmp/ksu-run.json \
+              || { echo "::error::run ${KSU_RUN_ID} tidak bisa dibaca dari API (run dihapus/kedaluwarsa, atau bukan milik backslashxx/KernelSU). Kosongkan ksu_run_id dan isi ksu_ref dengan hash commit."; exit 1; }
+            python3 - <<'PYRUN'
+          import json
+          d = json.load(open("/tmp/ksu-run.json"))
+          print("run   :", d.get("name"), "| event:", d.get("event"), "| status:", d.get("status"), "/", d.get("conclusion"))
+          print("branch:", d.get("head_branch"), "| judul:", d.get("display_title"))
+          print("commit:", d.get("head_sha"))
+          open("/tmp/ksu-run.sha", "w").write(d.get("head_sha") or "")
+          open("/tmp/ksu-run.concl", "w").write(str(d.get("conclusion")))
+          PYRUN
+            RUN_SHA="$(cat /tmp/ksu-run.sha)"
+            [ "${#RUN_SHA}" -eq 40 ] || { echo "::error::head_sha run ${KSU_RUN_ID} tidak valid"; exit 1; }
+            [ "$(cat /tmp/ksu-run.concl)" = "success" ] || echo "::warning::run ${KSU_RUN_ID} tidak berstatus success ($(cat /tmp/ksu-run.concl)); commit tetap dipakai"
+            KSU_REF="$RUN_SHA"
+            # commit yang dituju dipakai APA ADANYA: SELinux dari master tidak ditimpa
+            KSU_SELINUX_MASTER=false
+            echo "::notice::xxKSU dipin ke commit run ${KSU_RUN_ID}: ${RUN_SHA:0:8} (SELinux master dimatikan)"
+          fi
+          git -C KernelSU cat-file -e "${KSU_REF}^{commit}" 2>/dev/null || git -C KernelSU fetch -q origin "$KSU_REF" || true
+          if git -C KernelSU rev-parse -q --verify "refs/tags/${KSU_REF}^{commit}" >/dev/null; then
+            git -C KernelSU checkout -q "refs/tags/${KSU_REF}"
+            KSU_LABEL="$KSU_REF"
+          elif git -C KernelSU rev-parse -q --verify "${KSU_REF}^{commit}" >/dev/null; then
+            git -C KernelSU checkout -q --detach "${KSU_REF}"
+            KSU_LABEL="$(git -C KernelSU describe --tags --abbrev=0 2>/dev/null || echo ksu)-$(git -C KernelSU rev-parse --short=8 HEAD)"
+          else
+            echo "== Tag terbaru di repo =="; git -C KernelSU tag --sort=-creatordate | sed -n '1,25p'
+            echo "::error::'${KSU_REF}' bukan tag maupun commit di ${KSU_REPO}. Isi ksu_ref dengan tag atau hash commit."; exit 1
+          fi
+          BASE="$(git -C KernelSU rev-parse HEAD)"
+          echo "== xxKSU di-checkout: ${KSU_LABEL} (${BASE:0:8}) =="
+          git -C KernelSU log -1 --format='%h %s'
+
+          # --- SELinux terbaru: ambil kernel/selinux dari ujung master (hanya folder itu; sisanya tetap di tag) ---
+          SEL_NOTE="tag ${KSU_LABEL}"
+          # "SELinux clean" = policy yang dimodifikasi KernelSU menaikkan nomor urut (seqno/latest_granting) seperti load policy
+          # asli, bukan reset_avc_cache(0) yang membuat seqno statis dan mudah terdeteksi sebagai policy "dirty"
+          # (xxKSU 43aceaee / tiann #3964). Dipakai untuk menolak kernel/selinux yang tidak memenuhi syarat itu.
+          sel_is_clean() {
+            [ "$(grep -cE 'reset_avc_cache\((get_latest_granting_inc\(\)|pol->latest_granting)\)' "$1")" -ge 2 ] \
+              && ! grep -q 'reset_avc_cache(0)' "$1"
+          }
+          if [ "$KSU_SELINUX_MASTER" = "true" ]; then
+            git -C KernelSU fetch -q origin master
+            MASTER="$(git -C KernelSU rev-parse origin/master)"
+            echo "== Commit master (${MASTER:0:8}) yang menyentuh kernel/selinux sejak ${KSU_LABEL} =="
+            git -C KernelSU log --format='%h %ad %s' --date=short "${BASE}..${MASTER}" -- kernel/selinux | head -20 || true
+            if git -C KernelSU diff --quiet "$BASE" "$MASTER" -- kernel/selinux; then
+              echo "::notice::kernel/selinux di master identik dengan ${KSU_LABEL}: tidak ada perubahan SELinux baru"
+              SEL_NOTE="tag ${KSU_LABEL} (master identik)"
+            else
+              git -C KernelSU diff --stat "$BASE" "$MASTER" -- kernel/selinux
+              git -C KernelSU checkout "$MASTER" -- kernel/selinux
+              SEL_NOTE="kernel/selinux dari master @ ${MASTER:0:8}"
+              echo "::notice::kernel/selinux diambil dari master @ ${MASTER:0:8}"
+              if ! sel_is_clean KernelSU/kernel/selinux/rules.c; then
+                echo "::warning::kernel/selinux master @ ${MASTER:0:8} TIDAK clean (tanpa generation tracking policy): kembali ke versi tag ${KSU_LABEL}"
+                git -C KernelSU rm -rfq -- kernel/selinux
+                git -C KernelSU checkout "$BASE" -- kernel/selinux
+                SEL_NOTE="tag ${KSU_LABEL} (selinux master @ ${MASTER:0:8} ditolak: tidak clean)"
+              fi
+            fi
+          fi
+          # Gerbang akhir: apa pun sumbernya, kernel/selinux yang akan dibangun harus clean (gagal cepat sebelum build 30 menit).
+          sel_is_clean KernelSU/kernel/selinux/rules.c \
+            || { echo "::error::kernel/selinux xxKSU ${KSU_LABEL} tidak memuat generation tracking policy (seqno statis => policy terlihat dirty). Pakai ksu_ref yang lebih baru (>= v3.3.1-50)."; exit 1; }
+          echo "::notice::SELinux clean: generation tracking policy ada (${SEL_NOTE})"
+          # --- Kecocokan driver <-> manager ---
+          # 1) UAPI: ksud/manager menolak driver bila angka UAPI beda ("UAPI version mismatch ... Please update KernelSU!").
+          UAPI_RE='KERNEL_SU_UAPI_VERSION[^0-9]*[0-9]+'
+          UAPI_K="$(grep -oE "$UAPI_RE" KernelSU/kernel/include/uapi/supercall.h | grep -oE '[0-9]+$' | head -1)"
+          UAPI_U="$(grep -oE "$UAPI_RE" KernelSU/uapi/supercall.h | grep -oE '[0-9]+$' | head -1)"
+          echo "== UAPI: driver(kernel)=${UAPI_K:-?} manager/ksud(userspace)=${UAPI_U:-?} =="
+          if [ -z "$UAPI_K" ] || [ "$UAPI_K" != "$UAPI_U" ]; then
+            echo "::error::UAPI driver (${UAPI_K:-?}) beda dengan manager/ksud (${UAPI_U:-?}); manager tidak akan mau memakai driver ini."; exit 1
+          fi
+          # 2) Tanda tangan: sertifikat manager/dummy.keystore (dipakai manager buatan repo ini) harus ada di apk_sign.c.
+          KT="$(command -v keytool || true)"; [ -n "$KT" ] || { [ -n "${JAVA_HOME:-}" ] && KT="$JAVA_HOME/bin/keytool"; }
+          if [ -n "$KT" ] && [ -x "$KT" ] && [ -f KernelSU/manager/dummy.keystore ]; then
+            "$KT" -exportcert -alias alias -keystore KernelSU/manager/dummy.keystore -storepass password -file /tmp/ksu-cert.der >/dev/null 2>&1
+            CERT_SZ="$(stat -c%s /tmp/ksu-cert.der)"; CERT_HASH="$(sha256sum /tmp/ksu-cert.der | cut -d' ' -f1)"
+            echo "== Sertifikat manager (dummy.keystore): size=$(printf '0x%04x' "$CERT_SZ") sha256=${CERT_HASH} =="
+            if grep -qi "$CERT_HASH" KernelSU/kernel/manager/apk_sign.c \
+               && grep -qiE "0x0*$(printf '%x' "$CERT_SZ")[,)]" KernelSU/kernel/manager/apk_sign.c; then
+              echo "OK      driver menerima tanda tangan manager buatan repo ini"
+            else
+              echo "::error::apk_sign.c tidak memuat sertifikat manager/dummy.keystore: manager dari rilis ini akan ditolak driver."; exit 1
+            fi
+          else
+            echo "::warning::keytool/dummy.keystore tidak tersedia: pemeriksaan tanda tangan manager dilewati"
+          fi
+          # 3) Versi: manager = 30000 + jumlah commit - pengurang (build.gradle.kts); driver = -DKSU_VERSION di kernel/Makefile.
+          CNT="$(git -C KernelSU rev-list --count "$BASE")"
+          # Pengurang (92/93/...) berubah antar rilis: baca dari manager/build.gradle.kts commit ini (cadangan 93).
+          OFS="$(grep -oE '30000 \+ commitCount - [0-9]+' KernelSU/manager/build.gradle.kts 2>/dev/null | grep -oE '[0-9]+$' | head -1)"
+          echo "== Rumus manager: 30000 + commit - ${OFS:-93} (${OFS:+dibaca dari build.gradle.kts}${OFS:-cadangan}) =="
+          MGR_CODE=$((30000 + CNT - ${OFS:-93}))
+          DRV_OLD="$(grep -oE 'DKSU_VERSION=[0-9]+' KernelSU/kernel/Makefile | head -1 | cut -d= -f2)"
+          MIN_K="$(grep -oE 'MINIMAL_SUPPORTED_KERNEL = [0-9]+' KernelSU/manager/app/src/main/java/me/weishu/kernelsu/Natives.kt | grep -oE '[0-9]+$' | head -1)"
+          echo "== Versi: manager versionCode=${MGR_CODE} (commit=${CNT}), driver Makefile=${DRV_OLD:-?}, minimal kernel yang didukung manager=${MIN_K:-?} =="
+          DRV_FINAL="$DRV_OLD"
+          if [ -n "${KSU_DRV_OVERRIDE:-}" ]; then
+            case "$KSU_DRV_OVERRIDE" in *[!0-9]*) echo "::error::ksu_driver_version harus angka: '${KSU_DRV_OVERRIDE}'"; exit 1;; esac
+            if [ -n "$MIN_K" ] && [ "$KSU_DRV_OVERRIDE" -lt "$MIN_K" ]; then
+              echo "::error::ksu_driver_version (${KSU_DRV_OVERRIDE}) di bawah minimal manager (${MIN_K})"; exit 1
+            fi
+            sed -i -E "s/DKSU_VERSION=[0-9]+/DKSU_VERSION=${KSU_DRV_OVERRIDE}/" KernelSU/kernel/Makefile
+            grep -q "DKSU_VERSION=${KSU_DRV_OVERRIDE}" KernelSU/kernel/Makefile || { echo "::error::gagal menetapkan KSU_VERSION"; exit 1; }
+            DRV_FINAL="$KSU_DRV_OVERRIDE"
+            echo "::notice::Versi driver ditetapkan ${DRV_OLD} -> ${DRV_FINAL} (ksu_driver_version; manager commit ini = ${MGR_CODE})"
+          elif [ "$KSU_SYNC_VERSION" = "true" ]; then
+            if [ -n "$MIN_K" ] && [ "$MGR_CODE" -lt "$MIN_K" ]; then
+              echo "::warning::versionCode manager (${MGR_CODE}) < minimal kernel (${MIN_K}); versi driver dibiarkan ${DRV_OLD}"
+            else
+              sed -i -E "s/DKSU_VERSION=[0-9]+/DKSU_VERSION=${MGR_CODE}/" KernelSU/kernel/Makefile
+              grep -q "DKSU_VERSION=${MGR_CODE}" KernelSU/kernel/Makefile || { echo "::error::gagal menyamakan KSU_VERSION"; exit 1; }
+              DRV_FINAL="$MGR_CODE"
+              echo "::notice::Versi driver disamakan dengan manager: ${DRV_OLD} -> ${DRV_FINAL}"
+            fi
+          elif [ -n "$MIN_K" ] && [ -n "$DRV_OLD" ] && [ "$DRV_OLD" -lt "$MIN_K" ]; then
+            echo "::error::versi driver (${DRV_OLD}) di bawah minimal manager (${MIN_K})"; exit 1
+          fi
+          echo "KSU_MGR_CODE=${MGR_CODE}" >> "$GITHUB_ENV"
+          echo "KSU_DRV_VERSION=${DRV_FINAL}" >> "$GITHUB_ENV"
+          echo "KSU_LABEL=${KSU_LABEL}" >> "$GITHUB_ENV"
+          echo "KSU_COMMIT=${BASE}" >> "$GITHUB_ENV"
+          echo "KSU_SEL_NOTE=${SEL_NOTE}" >> "$GITHUB_ENV"
+
+          test -d KernelSU/kernel
+          ln -sfn ../KernelSU/kernel drivers/kernelsu
+          grep -q 'kernelsu' drivers/Makefile \
+            || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig \
+            || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          test -L drivers/kernelsu
+          test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Makefile
+          test -f drivers/kernelsu/ksu.c
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          grep -q 'kernelsu' drivers/Makefile
+
+          echo "== Opsi Kconfig xxKSU =="
+          grep -h -E '^[[:space:]]*config ' drivers/kernelsu/Kconfig || true
+          echo "== Versi & identitas manager yang ditanam di driver =="
+          grep -n -E 'KSU_VERSION=|KSU_PACKAGE_NAME :=|KSU_EXPECTED_SIZE :=|KSU_EXPECTED_HASH :=' drivers/kernelsu/Makefile | head -8 || true
+          echo "== Tanda tangan manager yang diterima (apk_sign.c) =="
+          grep -n -E '^\s*//\s*\S+|check_v2_signature\(path' drivers/kernelsu/manager/apk_sign.c | sed -n '1,20p' || true
+          echo "::notice::xxKSU ${KSU_LABEL} (commit ${BASE:0:8}), SELinux: ${SEL_NOTE}. Driver v${DRV_FINAL} UAPI ${UAPI_K}; manager: APK dari rilis ${KSU_LABEL} (versionCode ${MGR_CODE})."
+
+
+      - name: Pasang sisi KernelSU untuk SUSFS (10 opsi)
+        if: ${{ env.SUSFS_ENABLE == 'true' }}
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          KP="$GITHUB_WORKSPACE/repo/${SUSFS_KSU_PATCH}"
+          KK=KernelSU/kernel/Kconfig
+          GLUE=no
+          # Patch SUSFS sisi-KernelSU KHUSUS xxKSU (backslashxx/KernelSU): yapixel/xxksu_susfs_patch, "Patch 11".
+          # (10_enable_susfs_for_ksu.patch bawaan SUSFS hanya cocok untuk KernelSU tiann/OriginSU.)
+          XURL="${SUSFS_XXKSU_PATCH_URL:-https://raw.githubusercontent.com/yapixel/xxksu_susfs_patch/main/patches/xxksu/11_enable_susfs_for_ksu.patch}"
+          XP=/tmp/11_enable_susfs_for_xxksu.patch
+          rm -f "$XP"
+          if [ -n "$XURL" ]; then
+            for n in 1 2 3 4; do
+              curl -fsSL --retry 3 --connect-timeout 20 -o "$XP" "$XURL" && break
+              echo "::warning::unduh patch xxKSU percobaan $n/4 gagal: $XURL"; rm -f "$XP"; sleep $((n*10))
+            done
+          fi
+          if [ -s "$XP" ]; then
+            echo "Patch xxKSU: $XURL ($(wc -l < "$XP") baris, $(grep -c '^diff --git' "$XP") berkas, sha256 $(sha256sum "$XP" | cut -c1-16))"
+            grep -q 'KernelSU - SUSFS' "$XP" || { echo "::error::berkas yang diunduh bukan patch SUSFS untuk xxKSU"; head -5 "$XP"; exit 1; }
+          fi
+          if grep -qE '^[[:space:]]*config[[:space:]]+KSU_SUSFS[[:space:]]*$' "$KK"; then
+            GLUE=bawaan
+            echo "::notice::xxKSU ${KSU_LABEL} sudah punya opsi KSU_SUSFS di Kconfig-nya"
+          elif [ -s "$XP" ] && git -C KernelSU apply --check "$XP" 2>/tmp/ksu-apply.err; then
+            git -C KernelSU apply --whitespace=nowarn "$XP"
+            GLUE=patch-xxksu
+            echo "::notice::Patch SUSFS khusus xxKSU terpasang ke xxKSU ${KSU_LABEL}"
+          elif [ -s "$XP" ] && patch -p1 -d KernelSU --forward --dry-run -F3 < "$XP" >/tmp/ksu-patch-dry.log 2>&1; then
+            echo "== git apply --check gagal; patch -F3 dry-run bersih, diterapkan =="
+            head -20 /tmp/ksu-apply.err 2>/dev/null || true
+            patch -p1 -d KernelSU --forward --no-backup-if-mismatch -F3 < "$XP" | tail -30
+            find KernelSU -name '*.orig' -delete
+            GLUE=patch-xxksu
+            echo "::notice::Patch SUSFS khusus xxKSU terpasang (dengan fuzz) ke xxKSU ${KSU_LABEL}"
+          elif [ -s "$KP" ] && git -C KernelSU apply --check "$KP" 2>/tmp/ksu-apply.err; then
+            git -C KernelSU apply --whitespace=nowarn "$KP"
+            GLUE=patch
+            echo "::notice::${SUSFS_KSU_PATCH} terpasang ke xxKSU ${KSU_LABEL}"
+          else
+            echo "== Sisi-KernelSU SUSFS TIDAK bisa dipasang ke xxKSU ${KSU_LABEL} =="
+            [ -s "$XP" ] || echo "(patch xxKSU tidak berhasil diunduh dari ${XURL})"
+            [ -s "$KP" ] || echo "(file ${SUSFS_KSU_PATCH} tidak ada di repo workflow)"
+            head -30 /tmp/ksu-apply.err 2>/dev/null || true
+            if [ -s "$XP" ]; then
+              echo "== patch -F3 dry-run patch xxKSU =="; head -40 /tmp/ksu-patch-dry.log 2>/dev/null || true
+              echo "== Berkas yang dituju patch xxKSU tetapi tidak ada di xxKSU =="
+              grep '^diff --git' "$XP" | awk '{print $3}' | sed 's#^a/##' | while read -r f; do
+                [ -e "KernelSU/$f" ] || echo "  tidak ada: $f"
+              done
+            fi
+            if [ -s "$KP" ]; then
+              echo "== Berkas yang dituju patch tetapi tidak ada di xxKSU =="
+              grep '^diff --git' "$KP" | awk '{print $3}' | sed 's#^a/##' | while read -r f; do
+                [ -e "KernelSU/$f" ] || echo "  tidak ada: $f"
+              done
+            fi
+            echo "== Isi KernelSU/kernel dan gaya build xxKSU =="
+            ls KernelSU/kernel | head -40
+            grep -nE 'obj-|ksu\.o|kernelsu-objs' KernelSU/kernel/Makefile 2>/dev/null | head -10 || true
+          fi
+
+          if [ "$GLUE" = no ]; then
+            if [ "$SUSFS_REQUIRE_GLUE" = true ]; then
+              echo "::error::Sisi-KernelSU SUSFS tidak bisa dipasang ke xxKSU ${KSU_LABEL}. ${SUSFS_KSU_PATCH} dibuat untuk KernelSU tiann/OriginSU (Kbuild multi-berkas, hook manual); xxKSU di-build sebagai satu unit (ksu.o) dengan hook sendiri. Tanpa sisi-KernelSU, SUSFS di kernel tidak pernah diinisialisasi dan tidak bisa dikontrol dari userspace. Patch khusus xxKSU (yapixel/xxksu_susfs_patch) juga tidak cocok dengan xxKSU ${KSU_LABEL} (lihat diagnostik di atas). Pilihan: (1) pakai KernelSU tiann/OriginSU, atau (2) beri patch SUSFS khusus xxKSU lain lewat env SUSFS_XXKSU_PATCH_URL, atau (3) jalankan ulang dengan susfs_require_ksu_glue=false (SUSFS terkompilasi tetapi TIDAK aktif)."
+              exit 1
+            fi
+            echo "::warning::susfs_require_ksu_glue=false: SUSFS dikompilasi tetapi TIDAK aktif (tanpa sisi-KernelSU)."
+            [ -s "$KP" ] || { echo "::error::${SUSFS_KSU_PATCH} dibutuhkan untuk mengambil definisi 10 opsi Kconfig"; exit 1; }
+            # Definisikan KSU_SUSFS + 10 opsi dari menu di patch supaya CONFIG_KSU_SUSFS_* ada di Kconfig tree.
+            python3 - "$KP" fs/Kconfig.susfs <<'PY'
+          import sys
+          src, dst = sys.argv[1], sys.argv[2]
+          out, on = [], False
+          for l in open(src, encoding='utf-8', errors='replace').read().split('\n'):
+              if not on and l.startswith('+menu "KernelSU - SUSFS"'):
+                  on = True
+              if on:
+                  # hasil akhir hunk = baris tambahan (+) dan konteks ( ); baris hapus (-) dibuang
+                  if l.startswith('-'):
+                      continue
+                  if l.startswith('+') or l.startswith(' '):
+                      out.append(l[1:])
+                  else:
+                      break
+                  if l.startswith('+endmenu'):
+                      break
+          if not out or not out[-1].startswith('endmenu'):
+              sys.exit('::error::menu "KernelSU - SUSFS" tidak ditemukan di patch')
+          syms = [x.split()[1] for x in out if x.startswith('config ')]
+          open(dst, 'w', encoding='utf-8').write('# Opsi SUSFS (dari menu di 10_enable_susfs_for_ksu.patch). Sisi-KernelSU TIDAK dipasang.\n' + '\n'.join(out) + '\n')
+          print('opsi Kconfig:', ' '.join(syms))
+          PY
+            grep -q 'Kconfig.susfs' fs/Kconfig || printf '\nsource "fs/Kconfig.susfs"\n' >> fs/Kconfig
+          fi
+          echo "SUSFS_GLUE=${GLUE}" >> "$GITHUB_ENV"
+          echo "::notice::SUSFS sisi-KernelSU: ${GLUE}"
+
+      - name: Lengkapi hook SELinux SUSFS (sepolicy.c, bagian patch 10 yang tidak ada di patch 11)
+        if: ${{ env.SUSFS_ENABLE == 'true' }}
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          # Patch 11 (xxKSU) hanya memuat rules.c/selinux.c/selinux.h. Patch 10 (tiann) juga memasang hook di
+          # kernel/selinux/sepolicy.c: susfs_add_sus_avd_allowed_by_type() dan susfs_add_sus_type().
+          # Tanpa hook itu SUS_TYPE / SUS_AVD_ALLOWED di susfs.c tidak pernah terisi.
+          F=drivers/kernelsu/selinux/sepolicy.c
+          [ -f "$F" ] || F=KernelSU/kernel/selinux/sepolicy.c
+          [ -f "$F" ] || { echo "::error::sepolicy.c tidak ditemukan"; exit 1; }
+          cat > "$RUNNER_TEMP/susfs_sepolicy_fixup.py" <<'PY'
+          #!/usr/bin/env python3
+          # Melengkapi hunk SELinux patch 10 (tiann) yang TIDAK ada di patch 11 (xxKSU): hook SUSFS di kernel/selinux/sepolicy.c
+          # (susfs_add_sus_avd_allowed_by_type di add_rule_raw, susfs_add_sus_type di add_type). Idempoten, gagal keras bila anchor hilang.
+          import sys
+          p = sys.argv[1]
+          s = open(p, encoding="utf-8").read()
+          if "susfs_add_sus_type" in s:
+              print("[skip] sepolicy.c sudah berisi hook SUSFS"); sys.exit(0)
+
+          def once(s, old, new, label):
+              if s.count(old) != 1:
+                  print(f"::error::anchor '{label}' ditemukan {s.count(old)}x (harus 1x) di {p}"); sys.exit(1)
+              return s.replace(old, new)
+
+          s = once(s, "#define KSU_SUPPORT_ADD_TYPE\n",
+           "#define KSU_SUPPORT_ADD_TYPE\n\n#ifdef CONFIG_KSU_SUSFS\n"
+           "extern int susfs_add_sus_avd_allowed_by_type(u32 s_type, u32 t_type, u16 type, u32 orig_avd_allowed);\n"
+           "extern int susfs_add_sus_type(const char *secctx, u32 type_value);\n#endif // #ifdef CONFIG_KSU_SUSFS\n", "define")
+
+          # 1) add_rule_raw: sebelum node->datum.u.data diubah (nilai asli avd)
+          s = once(s, "\t\tif (invert) {\n\t\t\tif (perm)\n",
+           "#ifdef CONFIG_KSU_SUSFS\n\t\tsusfs_add_sus_avd_allowed_by_type(src->value, tgt->value, cls->value, node->datum.u.data);\n"
+           "#endif // #ifdef CONFIG_KSU_SUSFS\n\n\t\tif (invert) {\n\t\t\tif (perm)\n", "add_rule_raw")
+
+          # 2) add_type: bungkus (definisi asli diganti nama, wrapper memanggil hook setelah sukses)
+          OLD = "static bool add_type(struct policydb *db, const char *type_name, bool attr)\n{\n"
+          NEW = ("static bool ksu_add_type_orig(struct policydb *db, const char *type_name, bool attr);\n"
+                 "static bool add_type(struct policydb *db, const char *type_name, bool attr)\n{\n"
+                 "#ifdef CONFIG_KSU_SUSFS\n\tbool existed = symtab_search(&db->p_types, type_name) != NULL;\n#endif\n"
+                 "\tbool ok = ksu_add_type_orig(db, type_name, attr);\n"
+                 "#ifdef CONFIG_KSU_SUSFS\n\tif (ok && !existed) {\n"
+                 "\t\tstruct type_datum *t = symtab_search(&db->p_types, type_name);\n"
+                 "\t\tif (t)\n\t\t\tsusfs_add_sus_type(type_name, t->value);\n\t}\n#endif // #ifdef CONFIG_KSU_SUSFS\n"
+                 "\treturn ok;\n}\n\n"
+                 "static bool ksu_add_type_orig(struct policydb *db, const char *type_name, bool attr)\n{\n")
+          s = once(s, OLD, NEW, "add_type")
+          open(p, "w", encoding="utf-8").write(s)
+          print("[ok] hook SUSFS dipasang di", p)
+          PY
+          python3 -I "$RUNNER_TEMP/susfs_sepolicy_fixup.py" "$F"
+          grep -n "susfs_add_sus_type\|susfs_add_sus_avd_allowed_by_type" "$F"
+
+      - name: Verifikasi SELinux bersih (generation tracking + hook SUSFS)
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          D=drivers/kernelsu/selinux
+          [ -d "$D" ] || D=KernelSU/kernel/selinux
+          K="${D%/selinux}"
+          # 1) generation tracking (xxKSU 43aceaee / tiann #3964): seqno policy naik wajar seperti load policy asli, tidak statis 0
+          GT="$(grep -cE 'reset_avc_cache\((get_latest_granting_inc\(\)|pol->latest_granting)\)' "$D/rules.c")"
+          [ "$GT" -ge 2 ] \
+            || { echo "::error::rules.c belum memakai generation tracking di kedua jalur (apply_kernelsu_rules & handle_sepolicy): policy akan terlihat dirty"; exit 1; }
+          ! grep -q 'reset_avc_cache(0)' "$D/rules.c" || { echo "::error::masih ada reset_avc_cache(0) di rules.c"; exit 1; }
+          # 2) jalur seqno yang benar-benar dipakai di kernel 4.19 ini (selinux_state->ss->latest_granting atau simbol latest_granting)
+          if grep -q 'struct selinux_state ' security/selinux/include/security.h; then
+            echo "OK      kernel punya struct selinux_state: seqno lewat selinux_state.ss->latest_granting"
+            grep -q 'u32 latest_granting' security/selinux/ss/services.h \
+              || echo "::warning::'u32 latest_granting' tidak ditemukan di security/selinux/ss/services.h; kompilasi rules.c akan memberi tahu bila field-nya beda"
+          else
+            echo "::warning::kernel tanpa struct selinux_state: seqno lewat simbol global latest_granting (kallsyms); pastikan KALLSYMS_ALL=y"
+          fi
+          # 3) nama domain/file KernelSU "ksu"/"ksu_file" (bukan "su" yang umum dideteksi) + fitur selinux_hide ikut terbangun
+          grep -q '#define KERNEL_SU_DOMAIN "ksu"' "$D/selinux.h" \
+            || echo "::warning::KERNEL_SU_DOMAIN bukan \"ksu\" di selinux.h (cek apakah ini disengaja)"
+          if [ -f "$K/feature/selinux_hide.c" ] && grep -q 'ksu_selinux_hide_init();' "$K/ksu.c"; then
+            echo "OK      selinux_hide terpasang (sembunyikan type/rule KernelSU dari app uid >= 10000)"
+          else
+            echo "::warning::fitur selinux_hide tidak ditemukan di xxKSU ini (tag lama?)"
+          fi
+          # 4) hook SUSFS di sepolicy.c dan rules.c (hanya bila SUSFS aktif DAN sisi-KernelSU terpasang)
+          if [ "$SUSFS_ENABLE" = "true" ] && [ "${SUSFS_GLUE:-no}" != "no" ]; then
+            grep -q susfs_add_sus_type "$D/sepolicy.c" && grep -q susfs_add_sus_avd_allowed_by_type "$D/sepolicy.c" \
+              || { echo "::error::hook SUSFS di sepolicy.c tidak ada"; exit 1; }
+            if ! grep -q susfs_set_batch_sid "$D/rules.c"; then
+              if [ "${SUSFS_GLUE}" = "patch-xxksu" ]; then
+                echo "::error::susfs_set_batch_sid tidak dipanggil di rules.c"; exit 1
+              else
+                echo "::warning::susfs_set_batch_sid tidak ada di rules.c (glue ${SUSFS_GLUE}: SUSFS bawaan xxKSU commit ini, nama hook bisa berbeda)"
+              fi
+            fi
+          else
+            echo "SUSFS nonaktif / sisi-KernelSU tidak terpasang: pemeriksaan hook SUSFS dilewati"
+          fi
+          echo "::notice::SELinux clean: generation tracking OK (${GT} titik reset_avc_cache)"
+
+      - name: Rapikan warning macro fits_capacity (kernel/sched/cass.c)
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          # cass.c di-include dari fair.c (baris akhir) dan mendefinisikan ulang fits_capacity() dengan 2 argumen,
+          # padahal fair.c sudah punya versi 3 argumen -> "warning: 'fits_capacity' macro redefined".
+          # Definisi cass.c memang sudah berlaku saat ini; #undef di depannya hanya menghilangkan warning,
+          # perilaku kernel tidak berubah.
+          F=kernel/sched/cass.c
+          if [ -f "$F" ] && grep -qE '^#define fits_capacity\(cap, max\)' "$F" \
+               && ! grep -qE '^#undef fits_capacity' "$F"; then
+            sed -i 's/^#define fits_capacity(cap, max)/#undef fits_capacity\n#define fits_capacity(cap, max)/' "$F"
+            echo "::notice::#undef fits_capacity ditambahkan di $F"
+          else
+            echo "cass.c tidak perlu diubah"
+          fi
+          grep -n -B1 'define fits_capacity' "$F" || true
+
+      - name: Backport path_umount() (fs/namespace.c, kernel 4.19)
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          # Hanya perlu bila driver memanggil path_umount() tetapi tidak mendefinisikannya sendiri (compat 4.19).
+          if ! grep -rqE '\bpath_umount\(' drivers/kernelsu/ || grep -rqE '^(static )?(inline )?int path_umount\(' drivers/kernelsu/; then
+            echo "path_umount() tidak diperlukan oleh driver ini (atau sudah didefinisikan driver): dilewati"; exit 0
+          fi
+          # Link error build sebelumnya: "undefined symbol: path_umount" (kernelsu/feature/kernel_umount.c).
+          # path_umount() baru ada sejak Linux 5.9; tree 4.19 ini belum punya. Tambahkan versi 4.19
+          # (logika sama dengan SYSCALL umount 4.19, tanpa lookup path dari userspace).
+          F=fs/namespace.c
+          if grep -qE '^int path_umount\(' "$F"; then
+            echo "path_umount sudah ada, dilewati"
+          else
+            python3 - "$F" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p, encoding='utf-8').read()
+          marker = 'SYSCALL_DEFINE2(umount,'
+          assert s.count(marker) == 1, 'SYSCALL_DEFINE2(umount ditemukan %d kali' % s.count(marker)
+          func = """/* Backport path_umount() dari Linux 5.9 untuk kernel 4.19 (dipakai KernelSU kernel_umount). */
+          int path_umount(struct path *path, int flags)
+          {
+          	struct mount *mnt = real_mount(path->mnt);
+          	int ret;
+
+          	ret = -EINVAL;
+          	if (path->dentry != path->mnt->mnt_root)
+          		goto out;
+          	if (!check_mnt(mnt))
+          		goto out;
+          	if (mnt->mnt.mnt_flags & MNT_LOCKED)
+          		goto out;
+          	ret = -EPERM;
+          	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
+          		goto out;
+          	ret = do_umount(mnt, flags);
+          out:
+          	/* jangan path_put(): itu akan menghapus mnt_expiry_mark */
+          	dput(path->dentry);
+          	mntput_no_expire(mnt);
+          	return ret;
+          }
+
+          """
+          s = s.replace(marker, func + marker)
+          open(p, 'w', encoding='utf-8').write(s)
+          print('path_umount ditambahkan di', p)
+          PY
+          fi
+          grep -n 'path_umount' "$F"
+          grep -nE '^(static )?(int|void) (do_umount|check_mnt|mntput_no_expire)\(|^static .* check_mnt\(|^static int do_umount\(' "$F" || true
+
+      - name: Sediakan kallsyms_on_each_symbol() (kernel/kallsyms.c, kernel 4.19)
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          # Hanya perlu bila driver memakai kallsyms_on_each_symbol() tetapi tidak mendefinisikannya sendiri.
+          if ! grep -rqE 'kallsyms_on_each_symbol' drivers/kernelsu/ || grep -rqE '^(static )?(int|long) kallsyms_on_each_symbol\(' drivers/kernelsu/; then
+            echo "kallsyms_on_each_symbol() tidak diperlukan oleh driver ini: dilewati"; exit 0
+          fi
+          # Link error build sebelumnya: "undefined symbol: kallsyms_on_each_symbol" (referenced by vmlinux.o:(try_kallsyms_on_each_symbol)).
+          # kernel/kallsyms.o ikut dikompilasi, jadi fungsi ini tidak aktif di tree ini (tidak ada, atau dibungkus #if yang tidak terpenuhi).
+          # Skrip memeriksa guard preprosesor di sekitar definisi; bila perlu, menambah definisi sendiri HANYA pada kondisi
+          # ketika definisi asli tidak aktif (jadi tidak pernah dobel). Hanya simbol inti kernel (sama dengan versi mainline tanpa modul).
+          python3 - <<'PY'
+          import re, sys
+          p = 'kernel/kallsyms.c'
+          s = open(p, encoding='utf-8').read()
+          for need in ('kallsyms_expand_symbol', 'kallsyms_sym_address', 'kallsyms_num_syms'):
+              if need not in s:
+                  sys.exit("::error::%s tidak ada di kernel/kallsyms.c, struktur berubah; kirim isi file ini" % need)
+          if 'KSU_COMPAT_KALLSYMS_ON_EACH_SYMBOL' in s:
+              print('sudah ditambahkan sebelumnya'); sys.exit(0)
+
+          # Hitung guard preprosesor aktif di titik definisi (kalau ada).
+          m = re.search(r'^(?:int|long)\s+kallsyms_on_each_symbol\s*\(', s, re.M)
+          guards = []
+          if m:
+              stack = []
+              for line in s[:m.start()].split('\n'):
+                  t = line.strip()
+                  if not t.startswith('#'): continue
+                  d = re.sub(r'^#\s*', '', t)
+                  if d.startswith('ifdef'):    stack.append('defined(%s)' % d.split()[1])
+                  elif d.startswith('ifndef'): stack.append('!defined(%s)' % d.split()[1])
+                  elif re.match(r'if\b', d):   stack.append('(%s)' % re.sub(r'/\*.*?\*/|//.*$', '', d[2:]).strip())
+                  elif d.startswith('elif') or d.startswith('else'):
+                      if stack: stack[-1] = '!(%s)' % stack[-1] if d.startswith('else') else '0'
+                  elif d.startswith('endif'):
+                      if stack: stack.pop()
+              guards = stack
+              print('Definisi asli ada di baris', s[:m.start()].count('\n') + 1, '| guard:', guards or '(tanpa guard)')
+              if not guards:
+                  # definisi tanpa guard tetapi tetap undefined -> bukan masalah guard; jangan menebak
+                  i = s[:m.start()].count('\n')
+                  print('\n'.join(s.split('\n')[max(0, i-8):i+25]))
+                  sys.exit("::error::kallsyms_on_each_symbol terdefinisi tanpa guard, tetapi tidak ter-link; kirim keluaran ini")
+          else:
+              print('Definisi asli tidak ada di kernel/kallsyms.c')
+
+          cond = ('#if !(%s)\n' % ' && '.join(guards)) if guards else ''
+          end  = '#endif /* guard asli */\n' if guards else ''
+          body = '''
+          /* KSU_COMPAT_KALLSYMS_ON_EACH_SYMBOL: backport untuk kernel 4.19 (dipakai driver KernelSU). Hanya simbol inti kernel. */
+          %sint kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *, unsigned long), void *data)
+          {
+          \tchar namebuf[KSYM_NAME_LEN];
+          \tunsigned long i;
+          \tunsigned int off;
+          \tint ret;
+
+          \tfor (i = 0, off = 0; i < kallsyms_num_syms; i++) {
+          \t\toff = kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+          \t\tret = fn(data, namebuf, NULL, kallsyms_sym_address(i));
+          \t\tif (ret != 0)
+          \t\t\treturn ret;
+          \t}
+          \treturn 0;
+          }
+          %s''' % (cond, end)
+          import textwrap
+          body = textwrap.dedent(body.replace('\n          ', '\n'))
+          open(p, 'w', encoding='utf-8').write(s.rstrip('\n') + '\n' + body)
+          print('kallsyms_on_each_symbol() ditambahkan di akhir', p)
+          PY
+          tail -30 kernel/kallsyms.c
+          grep -n 'kallsyms_on_each_symbol' include/linux/kallsyms.h || echo "(tidak dideklarasikan di kallsyms.h; driver mendeklarasikan sendiri)"
+
+      - name: Setup NoMount (v2.3.0-720)
+        if: ${{ env.NOMOUNT_ENABLE == 'true' }}
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          # Cara yang sama dengan build munch (terbukti jalan di 4.19): setup.sh resmi dari TAG yang sama
+          # dengan versi yang dipasang (bukan branch dev). Script membuat symlink fs/nomount -> NoMount/kernel/src
+          # dan memasang Kconfig/Makefile. Kernel 4.19 legacy: LKM tidak bisa dipakai, wajib built-in.
+          curl -fLSs -o /tmp/nomount-setup.sh \
+            "https://raw.githubusercontent.com/maxsteeel/nomount/${NOMOUNT_TAG}/kernel/setup.sh"
+          sh /tmp/nomount-setup.sh "${NOMOUNT_TAG}"
+
+          echo "== NoMount yang terpasang =="
+          git -C NoMount describe --tags --always
+
+          test -L fs/nomount
+          test -f fs/nomount/nomount.c
+          grep -q 'fs/nomount/Kconfig' fs/Kconfig
+          grep -q 'CONFIG_NOMOUNT' fs/Makefile
+          echo "::notice::NoMount ${NOMOUNT_TAG} terintegrasi"
+
+      - name: Izinkan KALLSYMS_ALL tanpa DEBUG_KERNEL (init/Kconfig)
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          # Kconfig 4.19: KALLSYMS_ALL "depends on DEBUG_KERNEL && KALLSYMS". Mengaktifkan DEBUG_KERNEL mengubah
+          # banyak kode driver (qcacld-3.0: "incomplete type 'struct stack_trace'"), jadi cukup lepas dependensinya.
+          # Efeknya hanya memasukkan simbol data ke kallsyms; non-GKI xxKSU mewajibkan KALLSYMS=y dan KALLSYMS_ALL=y.
+          python3 - <<'PY'
+          import re, sys
+          p = 'init/Kconfig'
+          s = open(p, encoding='utf-8').read()
+          m = re.search(r'(config KALLSYMS_ALL\n(?:[^\n]*\n)*?\s*depends on )DEBUG_KERNEL && KALLSYMS', s)
+          if not m:
+              i = s.find('config KALLSYMS_ALL')
+              print(s[i:i+400] if i >= 0 else 'config KALLSYMS_ALL tidak ada')
+              sys.exit('::error::blok KALLSYMS_ALL di init/Kconfig tidak sesuai dugaan')
+          s = s[:m.start()] + m.group(1) + 'KALLSYMS' + s[m.end():]
+          open(p, 'w', encoding='utf-8').write(s)
+          print('init/Kconfig: KALLSYMS_ALL tidak lagi butuh DEBUG_KERNEL')
+          PY
+          grep -n -A6 'config KALLSYMS_ALL' init/Kconfig
+
+      - name: Tambah swap (cadangan memori untuk link LTO)
+        if: ${{ env.OFFICIAL_OPTS == 'true' && env.LTO_MODE != 'none' }}
+        run: |
+          free -h
+          sudo swapoff -a || true
+          if sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile >/dev/null && sudo swapon /swapfile; then
+            echo "::notice::Swap 8G aktif"
+          else
+            echo "::notice::Swap gagal dibuat, lanjut tanpa swap"
+          fi
+          free -h
+
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          export CCACHE_DIR="$HOME/.ccache"
+          ccache -M 5G
+          # ccache dipasang lewat symlink bernama "clang" di depan PATH, jadi CC cukup "clang".
+          # (CC="ccache clang" bisa membuat deteksi CC_IS_CLANG / CLANG_VERSION / HAS_LTO_CLANG di Kconfig meleset.)
+          mkdir -p "$HOME/ccache-bin"
+          ln -sf "$(command -v ccache)" "$HOME/ccache-bin/clang"
+          export PATH="$HOME/ccache-bin:$PATH"
+          clang --version | sed -n '1p'
+          MAKE_ARGS=(
+            O=out ARCH=arm64
+            CC=clang
+            LD=ld.lld AR=llvm-ar NM=llvm-nm
+            # HAS_LTO_CLANG (arch/Kconfig) menjalankan: test $(LLVM) -eq 1 dan test $(LLVM_IAS) -eq 1.
+            # Tanpa dua variabel ini LTO_CLANG_* selalu ditolak olddefconfig (LTO_NONE).
+            LLVM=1 LLVM_IAS=1
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            # LOCALVERSION= (kosong) mencegah scripts/setlocalversion menambah "+" (repo git tidak bersih/tanpa tag)
+            LOCALVERSION=
+          )
+          make "${MAKE_ARGS[@]}" "${{ inputs.defconfig }}" 2>&1 | tee ../build.log
+
+          echo "== Defconfig tree (SEBELUM diubah workflow): LTO / MEMCG / PSI =="
+          grep -E '^(# )?CONFIG_(LTO[A-Z_]*|THINLTO|POLLY_CLANG|MEMCG[A-Z_]*|PSI|MODULES|KPROBES|FTRACE|TRACEPOINTS)[= ]' out/.config || echo "(tidak ada opsi terkait di defconfig)"
+
+          # --- Nama kernel (uname -r -> 4.19.325-kaizen, terbaca di KernelSU-Next & Info ponsel) ---
+          scripts/config --file out/.config \
+            --set-str LOCALVERSION "${KERNEL_LOCALVERSION}" -d LOCALVERSION_AUTO
+
+          # --- LTO + Polly (env OFFICIAL_OPTS, input lto_mode) ---
+          has_sym() { git grep -qE "^(menu)?config[[:space:]]+$1[[:space:]]*\$" -- 'Kconfig*' '*/Kconfig*'; }
+          # Status LTO nyata di out/.config: full | thin | none
+          lto_state() {
+            if grep -q '^CONFIG_LTO_CLANG_FULL=y' out/.config; then echo full
+            elif grep -q '^CONFIG_LTO_CLANG_THIN=y' out/.config || grep -q '^CONFIG_THINLTO=y' out/.config; then echo thin
+            elif grep -q '^CONFIG_LTO_CLANG=y' out/.config; then echo full
+            else echo none; fi
+          }
+          # Nyalakan LTO: $1 = full | thin. Mendukung dua gaya Kconfig (choice LTO_CLANG_FULL/THIN, atau LTO_CLANG + THINLTO ala CAF 4.19).
+          lto_enable() {
+            if has_sym LTO_CLANG_FULL; then
+              if [ "$1" = full ]; then
+                scripts/config --file out/.config -d LTO_NONE -d LTO_CLANG_THIN -e LTO_CLANG_FULL
+              else
+                scripts/config --file out/.config -d LTO_NONE -d LTO_CLANG_FULL -e LTO_CLANG_THIN
+              fi
+            elif has_sym LTO_CLANG; then
+              scripts/config --file out/.config -e LTO_CLANG
+              if has_sym THINLTO; then
+                if [ "$1" = full ]; then scripts/config --file out/.config -d THINLTO; else scripts/config --file out/.config -e THINLTO; fi
+              fi
+            else
+              return 1
+            fi
+          }
+          # Diagnosis: cetak blok Kconfig + nilai config yang biasanya menjadi penghalang LTO.
+          lto_diag() (
+            set +e
+            echo "== Diagnosis LTO: blok Kconfig =="
+            for sym in LTO_CLANG_FULL LTO_CLANG_THIN HAS_LTO_CLANG LTO_CLANG ARCH_SUPPORTS_LTO_CLANG ARCH_SUPPORTS_LTO_CLANG_THIN THINLTO; do
+              f="$(git grep -lE "^(menu)?config[[:space:]]+${sym}[[:space:]]*\$" -- 'Kconfig*' '*/Kconfig*' | sed -n '1p')"
+              if [ -n "$f" ]; then echo "--- ${sym} (${f})"; grep -n -A16 -E "^(menu)?config[[:space:]]+${sym}[[:space:]]*\$" "$f" | sed -n '1,22p'; fi
+            done
+            echo "== Diagnosis LTO: nilai config terkait =="
+            grep -E '^(# )?CONFIG_(CC_IS_CLANG|LD_IS_LLD|CLANG_VERSION|LTO[A-Z_]*|ARCH_SUPPORTS_LTO[A-Z_]*|HAS_LTO_CLANG|THINLTO|FTRACE|DYNAMIC_FTRACE|FTRACE_MCOUNT_RECORD|FTRACE_MCOUNT_USE_RECORDMCOUNT|KASAN|GCOV_KERNEL|MODVERSIONS|TRIM_UNUSED_KSYMS|COMPILE_TEST|SHADOW_CALL_STACK|CFI_CLANG|CPU_BIG_ENDIAN)[= ]' out/.config || true
+            echo "== Diagnosis LTO: toolchain =="
+            clang --version | sed -n '1p'; ld.lld --version | sed -n '1p'
+            llvm-nm --help 2>&1 | sed -n '1p'; llvm-ar --help 2>&1 | sed -n '1p'
+            echo "== Diagnosis LTO: variabel make =="
+            printf '%s\n' "${MAKE_ARGS[@]}" | grep -E '^(LLVM|LLVM_IAS|CC|LD|AR|NM)='
+            echo "== Diagnosis LTO: arm64 select ARCH_SUPPORTS_LTO_CLANG =="
+            git grep -n 'ARCH_SUPPORTS_LTO_CLANG' -- arch/arm64/Kconfig
+            exit 0
+          )
+          if [ "$OFFICIAL_OPTS" = "true" ]; then
+            # LTO sesuai input lto_mode (full | thin | none). Hasil akhirnya diperiksa & di-fallback setelah olddefconfig.
+            if [ "$LTO_MODE" = "none" ]; then
+              echo "LTO dimatikan lewat input lto_mode=none"
+            elif ! lto_enable "$LTO_MODE"; then
+              echo "::warning::Simbol Kconfig LTO_CLANG / LTO_CLANG_FULL tidak ada di tree ini: LTO dilewati"
+            fi
+            # Polly: lewat Kconfig kalau ada; kalau tidak, lewat flag compiler (hanya flag yang diterima clang ini).
+            if has_sym POLLY_CLANG; then
+              scripts/config --file out/.config -e POLLY_CLANG
+            elif git grep -qi 'polly' -- Makefile arch/arm64/Makefile; then
+              echo "Makefile source sudah memuat flag Polly, tidak ditambah lagi"
+            else
+              PF=""
+              for o in -polly -polly-run-dce -polly-run-inliner -polly-opt-fusion=max -polly-ast-use-context \
+                       -polly-detect-keep-going -polly-vectorizer=stripmine -polly-invariant-load-hoisting; do
+                if echo 'int x;' | clang --target=aarch64-linux-gnu -O2 -mllvm "$o" -x c -c - -o /dev/null 2>/dev/null; then
+                  PF="$PF -mllvm $o"
+                else
+                  echo "flag Polly tidak didukung toolchain ini, dilewati: $o"
+                fi
+              done
+              case "$PF" in
+                *"-mllvm -polly "*|*"-mllvm -polly") MAKE_ARGS+=("KCFLAGS=${PF# }"); echo "::notice::Polly aktif lewat KCFLAGS:${PF}" ;;
+                *) echo "::warning::Polly tidak didukung toolchain ini: dilewati" ;;
+              esac
+            fi
+          fi
+
+          # --- xxKSU (backslashxx/KernelSU): built-in; hook lewat ARM64 branch-link / syscall table + LSM hook (tanpa patch hook di sumber kernel) ---
+          ksu_has() { grep -qE "^[[:space:]]*config[[:space:]]+$1([[:space:]]|$)" drivers/kernelsu/Kconfig; }
+          scripts/config --file out/.config -e KSU -e KALLSYMS -e KALLSYMS_ALL -e SECCOMP
+          HOOK_OPT=""
+          if [ "$KSU_HOOK_MODE" = "syscall_table" ]; then
+            if ksu_has KSU_TAMPER_SYSCALL_TABLE; then
+              scripts/config --file out/.config -d KSU_HACK_ARM64_BRANCH_LINK -e KSU_TAMPER_SYSCALL_TABLE
+              HOOK_OPT="CONFIG_KSU_TAMPER_SYSCALL_TABLE"
+            else
+              echo "::warning::KSU_TAMPER_SYSCALL_TABLE tidak ada di Kconfig xxKSU ${KSU_LABEL:-$KSU_REF}"
+            fi
+          else
+            if ksu_has KSU_HACK_ARM64_BRANCH_LINK; then
+              scripts/config --file out/.config -d KSU_TAMPER_SYSCALL_TABLE -e KSU_HACK_ARM64_BRANCH_LINK
+              HOOK_OPT="CONFIG_KSU_HACK_ARM64_BRANCH_LINK"
+            else
+              echo "::warning::KSU_HACK_ARM64_BRANCH_LINK tidak ada di Kconfig xxKSU ${KSU_LABEL:-$KSU_REF}"
+            fi
+          fi
+          echo "Mode hook xxKSU: ${KSU_HOOK_MODE} (${HOOK_OPT:-tidak ada})"
+          if [ "$KSU_STEALTH" = "true" ]; then
+            if ksu_has KSU_NOPRINTK; then
+              scripts/config --file out/.config -e KSU_NOPRINTK -d KSU_DEBUG
+              echo "::notice::KSU_STEALTH: KSU_NOPRINTK=y"
+            else
+              echo "::warning::KSU_NOPRINTK tidak ada di Kconfig xxKSU ${KSU_LABEL:-$KSU_REF}"
+            fi
+          fi
+
+          if [ "$KSU_STEALTH" = "true" ]; then
+            # /proc/config.gz membuka CONFIG_KSU*/SUSFS/NOMOUNT ke aplikasi pendeteksi
+            scripts/config --file out/.config -d IKCONFIG_PROC
+            echo "::notice::KSU_STEALTH: IKCONFIG_PROC dimatikan (/proc/config.gz tidak ada)"
+          fi
+
+          # --- NoMount v2.2.0 (built-in) ---
+          if [ "$NOMOUNT_ENABLE" = "true" ]; then
+            scripts/config --file out/.config -e NOMOUNT
+          fi
+
+          # --- Mode senyap: buang ENABLE_LOG dari daftar opsi (juga dari daftar verifikasi di bawah) ---
+          if [ "$KSU_STEALTH" = "true" ]; then
+            SUSFS_OPTS="$(printf '%s\n' "$SUSFS_OPTS" | tr ' ' '\n' | grep -vx 'KSU_SUSFS_ENABLE_LOG' | tr '\n' ' ')"
+            scripts/config --file out/.config -d KSU_SUSFS_ENABLE_LOG
+            echo "::notice::KSU_STEALTH: KSU_SUSFS_ENABLE_LOG dimatikan"
+          fi
+          # --- SUSFS (Jack) 10 opsi + fgetpriority (built-in) ---
+          if [ "$SUSFS_ENABLE" = "true" ]; then
+            for o in $SUSFS_OPTS; do scripts/config --file out/.config -e "$o"; done
+            echo "::notice::SUSFS: ${SUSFS_OPTS// /, } diaktifkan"
+          fi
+          if [ "$FGP_ENABLE" = "true" ]; then
+            scripts/config --file out/.config -e FGETPRIORITY
+          fi
+
+          # --- Memori / shrinker ---
+          # Mode default (enable_memcg_psi=false) = Starlight: ANDROID_SIMPLE_LMK=y, MEMCG/PSI mati.
+          # Kconfig: ANDROID_SIMPLE_LMK depends on !ANDROID_LOW_MEMORY_KILLER && !MEMCG && !PSI, jadi semua yang bentrok
+          # dimatikan SEBELUM olddefconfig dan Simple LMK dinyalakan di putaran yang SAMA (olddefconfig membuang simbol
+          # yang dependensinya belum terpenuhi saat itu, dan tidak menyalakannya lagi di putaran berikutnya).
+          MEMCG_REQ=""
+          if [ "$ENABLE_MEMCG_PSI" = "true" ]; then
+            scripts/config --file out/.config -e CGROUPS -e MEMCG
+            MEMCG_REQ="CONFIG_MEMCG"
+            for sym in MEMCG_SWAP MEMCG_KMEM PSI; do
+              if has_sym "$sym"; then
+                scripts/config --file out/.config -e "$sym"; MEMCG_REQ="$MEMCG_REQ CONFIG_${sym}"
+              else
+                echo "::notice::${sym} tidak ada di Kconfig tree ini (dilewati)"
+              fi
+            done
+            scripts/config --file out/.config -d ANDROID_SIMPLE_LMK
+            echo "::notice::enable_memcg_psi aktif: ${MEMCG_REQ} (Simple LMK dimatikan karena bentrok)"
+          else
+            # Prasyarat sumber: driver Simple LMK harus benar-benar ada di tree (bukan hanya Kconfig-nya).
+            has_sym ANDROID_SIMPLE_LMK \
+              || { echo "::error::Simbol ANDROID_SIMPLE_LMK tidak ada di Kconfig tree ini; tree ini tidak membawa Simple LMK."; exit 1; }
+            test -f drivers/android/simple_lmk.c \
+              || { echo "::error::drivers/android/simple_lmk.c tidak ada di tree ini."; exit 1; }
+            grep -q 'CONFIG_ANDROID_SIMPLE_LMK' drivers/android/Makefile \
+              || { echo "::error::drivers/android/Makefile tidak membangun simple_lmk (CONFIG_ANDROID_SIMPLE_LMK)."; exit 1; }
+            scripts/config --file out/.config \
+              -d MEMCG -d MEMCG_SWAP -d MEMCG_SWAP_ENABLED -d MEMCG_KMEM \
+              -d PSI -d PSI_DEFAULT_DISABLED -d ANDROID_LOW_MEMORY_KILLER \
+              -e SWAP -e ANDROID -e STAGING -e ANDROID_SIMPLE_LMK
+            echo "::notice::Mode Starlight: ANDROID_SIMPLE_LMK=y, MEMCG/PSI dimatikan"
+          fi
+          # --- Kernel panic: default tree -> nilai sysctl awal setelah boot (dibaca aplikasi LSpeed dll.) ---
+          echo "== Opsi panic di defconfig tree (SEBELUM diubah workflow) =="
+          grep -E '^(# )?CONFIG_(PANIC_ON_OOPS(_VALUE)?|PANIC_TIMEOUT|BOOTPARAM_SOFTLOCKUP_PANIC(_VALUE)?|BOOTPARAM_HUNG_TASK_PANIC(_VALUE)?|BOOTPARAM_HARDLOCKUP_PANIC(_VALUE)?|DEBUG_BUGVERBOSE)[= ]' out/.config || echo "(tidak ada)"
+          if [ "${{ inputs.disable_kernel_panic }}" = "true" ]; then
+            scripts/config --file out/.config \
+              -d PANIC_ON_OOPS --set-val PANIC_ON_OOPS_VALUE 0 --set-val PANIC_TIMEOUT 0 \
+              -d BOOTPARAM_SOFTLOCKUP_PANIC -d BOOTPARAM_HUNG_TASK_PANIC -d BOOTPARAM_HARDLOCKUP_PANIC
+            echo "::notice::disable_kernel_panic aktif: panic_on_oops=0, panic=0, softlockup/hung-task/hardlockup panic=0 (nilai awal sysctl)"
+          fi
+
+          make "${MAKE_ARGS[@]}" olddefconfig 2>&1 | tee -a ../build.log
+
+          echo "== Opsi panic di .config FINAL =="
+          grep -E '^(# )?CONFIG_(PANIC_ON_OOPS(_VALUE)?|PANIC_TIMEOUT|BOOTPARAM_SOFTLOCKUP_PANIC|BOOTPARAM_HUNG_TASK_PANIC|BOOTPARAM_HARDLOCKUP_PANIC)[= ]' out/.config || true
+
+          # Pastikan opsi benar-benar aktif (Kconfig membuang opsi yang tidak dikenal / dependensi tidak terpenuhi)
+          MISSING=0
+          REQ="CONFIG_KSU CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_SECURITY_SELINUX ${HOOK_OPT}"
+          if [ "$SUSFS_ENABLE" = "true" ]; then for o in $SUSFS_OPTS; do REQ="$REQ CONFIG_${o}"; done; fi
+          if [ "$FGP_ENABLE" = "true" ]; then REQ="$REQ CONFIG_FGETPRIORITY"; fi
+          if [ "$ENABLE_MEMCG_PSI" = "true" ]; then REQ="$REQ $MEMCG_REQ"; else REQ="$REQ CONFIG_ANDROID_SIMPLE_LMK"; fi
+          for opt in $REQ; do
+            if grep -q "^${opt}=y" out/.config; then echo "OK      ${opt}=y"
+            else echo "MISSING ${opt}"; MISSING=1; fi
+          done
+          if [ -z "$HOOK_OPT" ]; then echo "::error::Tidak ada mode hook xxKSU yang bisa diaktifkan"; MISSING=1; fi
+          if [ "$ENABLE_MEMCG_PSI" != "true" ]; then
+            # Mode Starlight: MEMCG/PSI/LMK lama HARUS mati (bila ada yang aktif lagi, mis. di-select simbol lain, build dihentikan)
+            for bad in CONFIG_MEMCG CONFIG_PSI CONFIG_ANDROID_LOW_MEMORY_KILLER; do
+              if grep -q "^${bad}=y" out/.config; then
+                echo "::error::${bad}=y masih aktif padahal mode Starlight (Simple LMK)"; MISSING=1
+              else
+                echo "OK      ${bad} mati"
+              fi
+            done
+            if ! grep -q '^CONFIG_ANDROID_SIMPLE_LMK=y' out/.config; then
+              echo "== Diagnosis ANDROID_SIMPLE_LMK =="
+              KF="$(git grep -lE '^config[[:space:]]+ANDROID_SIMPLE_LMK[[:space:]]*$' -- 'Kconfig*' '*/Kconfig*' | sed -n '1p')"
+              grep -n -A14 -E '^config[[:space:]]+ANDROID_SIMPLE_LMK[[:space:]]*$' "$KF" || true
+              grep -E '^(# )?CONFIG_(ANDROID_SIMPLE_LMK|ANDROID_LOW_MEMORY_KILLER|ANDROID|STAGING|ANDROID_BINDER_IPC|SWAP|MEMCG|PSI)[= ]' out/.config || true
+            fi
+          fi
+          if [ "$MISSING" -ne 0 ]; then
+            echo "== Diagnosis: KSU / hook di out/.config =="
+            grep -E '^(# )?CONFIG_(KSU|KALLSYMS|KPROBES|MODULES|NOMOUNT|FGETPRIORITY|THREAD_INFO_IN_TASK|SECURITY_SELINUX)[A-Z0-9_]*[= ]' out/.config || true
+            echo "== Kconfig xxKSU (cek 'depends on') =="
+            sed -n '1,120p' drivers/kernelsu/Kconfig || true
+            echo "::error::Ada opsi xxKSU yang tidak aktif (lihat daftar MISSING di atas)."
+            exit 1
+          fi
+          grep -E '^CONFIG_KSU' out/.config || true
+          if [ "$NOMOUNT_ENABLE" = "true" ]; then
+            grep -q '^CONFIG_NOMOUNT=y' out/.config \
+              || { echo "::error::CONFIG_NOMOUNT tidak aktif di out/.config"; grep -E '^(# )?CONFIG_(NOMOUNT|KEYS)' out/.config || true; cat fs/nomount/Kconfig || true; exit 1; }
+            echo "OK      CONFIG_NOMOUNT=y"
+          fi
+          echo "== Opsi MEMCG / PSI / shrinker / LTO di build ini =="
+          grep -E '^(# )?CONFIG_(MEMCG[A-Z_]*|PSI|ANDROID_SIMPLE_LMK|ANDROID_LOW_MEMORY_KILLER|MODULES|KPROBES|FTRACE|TRACEPOINTS)[= ]' out/.config || true
+
+          if [ "$OFFICIAL_OPTS" = "true" ]; then
+            echo "== Opsi build resmi (LTO/Polly) di out/.config =="
+            grep -E '^(# )?CONFIG_(LTO|LTO_CLANG|LTO_CLANG_FULL|LTO_CLANG_THIN|LTO_NONE|THINLTO|POLLY_CLANG)[= ]' out/.config || true
+          fi
+
+          # --- Verifikasi LTO + fallback otomatis: full -> thin -> tanpa LTO ---
+          LTO_FINAL="none"
+          if [ "$OFFICIAL_OPTS" = "true" ] && [ "$LTO_MODE" != "none" ]; then
+            GOT="$(lto_state)"
+            if [ "$GOT" != "$LTO_MODE" ]; then
+              echo "::notice::LTO '${LTO_MODE}' ditolak Kconfig setelah olddefconfig (hasil: ${GOT}). Diagnosis di bawah."
+              lto_diag
+              if [ "$LTO_MODE" = "full" ] && lto_enable thin; then
+                echo "Mencoba ThinLTO sebagai cadangan..."
+                make "${MAKE_ARGS[@]}" olddefconfig 2>&1 | tee -a ../build.log
+                GOT="$(lto_state)"
+              fi
+            fi
+            case "$GOT" in
+              "$LTO_MODE") echo "::notice::LTO aktif: ${GOT}" ;;
+              none)        echo "::warning::LTO tidak bisa diaktifkan (lihat blok 'Diagnosis LTO' di atas): build berjalan TANPA LTO" ;;
+              *)           echo "::notice::LTO '${LTO_MODE}' tidak didukung, memakai cadangan: ${GOT}" ;;
+            esac
+            LTO_FINAL="$GOT"
+          fi
+          echo "LTO_FINAL=${LTO_FINAL}" >> "$GITHUB_ENV"
+          {
+            echo "### Ringkasan konfigurasi"
+            echo "- Upstream CIP: merge \`${CIP_MERGED:-tidak}\` (\`${CIP_BRANCH}\`${CIP_COMMIT:+ @ \`${CIP_COMMIT:0:8}\`})"
+            echo "- xxKSU: \`${KSU_LABEL:-$KSU_REF}\` (commit \`${KSU_COMMIT:0:8}\`), SELinux: \`${KSU_SEL_NOTE}\`, hook: \`${KSU_HOOK_MODE}\`, versi driver: \`${KSU_DRV_VERSION}\` (manager versionCode \`${KSU_MGR_CODE}\`)"
+            echo "- NoMount: \`${NOMOUNT_ENABLE}\` (\`${NOMOUNT_TAG}\`)"
+            echo "- SUSFS: \`${SUSFS_ENABLE}\` (\`${SUSFS_VER:-tidak}\`, sisi-KernelSU: \`${SUSFS_GLUE:-tidak}\`), fgetpriority: \`${FGP_ENABLE}\` (\`${FGP_COMMIT:0:8}\`)"
+            echo "- LTO akhir: \`${LTO_FINAL}\`, MEMCG: \`$(grep -q '^CONFIG_MEMCG=y' out/.config && echo aktif || echo mati)\`, PSI: \`$(grep -q '^CONFIG_PSI=y' out/.config && echo aktif || echo mati)\`, Simple LMK: \`$(grep -q '^CONFIG_ANDROID_SIMPLE_LMK=y' out/.config && echo aktif || echo mati)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # -k: lanjutkan kompilasi walau ada error, supaya SEMUA error muncul sekaligus dalam satu run.
+          if ! make -k -j"$(nproc)" "${MAKE_ARGS[@]}" 2>&1 | tee -a ../build.log; then
+            echo "== Ringkasan semua error compile =="
+            grep -E 'error:|\*\*\* \[' ../build.log | grep -v '::error' | sort -u | head -80 || true
+            echo "::error::Kompilasi kernel gagal (lihat ringkasan error di atas)."
+            exit 1
+          fi
+
+          echo "== Info xxKSU di build ini =="
+          grep -E '^-- (KernelSU|KSU)' ../build.log | sort -u || true
+          KREL="$(cat out/include/config/kernel.release)"
+          echo "== Versi kernel (uname -r): ${KREL} =="
+          case "$KREL" in
+            *"${KERNEL_LOCALVERSION}") echo "::notice::Nama kernel terpasang: ${KREL}" ;;
+            *) echo "::error::kernel.release '${KREL}' tidak berakhiran '${KERNEL_LOCALVERSION}'"; exit 1 ;;
+          esac
+          ls -lh out/arch/arm64/boot/ || true
+
+      - name: Diagnosis xxKSU (informasi, tidak menggagalkan build)
+        working-directory: kernel
+        run: |
+          set +e
+          echo "== Driver xxKSU ikut ter-link? (jumlah simbol ksu_ di System.map) =="
+          grep -cE ' [a-zA-Z] ksu_' out/System.map
+          grep -E ' [a-zA-Z] (kernelsu_init|ksu_handle_[a-z_]+)$' out/System.map | head -12
+          echo "== Config terkait =="
+          grep -E '^(# )?CONFIG_(KSU|KALLSYMS|KALLSYMS_ALL|SECCOMP|SECURITY_SELINUX|MEMCG|PSI|ANDROID_SIMPLE_LMK|LTO_CLANG_FULL|LTO_CLANG_THIN|FGETPRIORITY)[A-Z_]*[= ]' out/.config
+          echo "== SUSFS / fgetpriority ikut ter-link? =="
+          echo "simbol susfs_: $(grep -cE ' [a-zA-Z] susfs_' out/System.map)"
+          grep -E 'susfs_init|gphook_find_user|fgetpriority_init' out/System.map | head -6
+          echo "== Waktu build kernel (cocokkan dengan uname -v di HP untuk memastikan zip yang benar ter-flash) =="
+          strings out/arch/arm64/boot/Image* 2>/dev/null | grep -m1 'Linux version'
+
+      - name: Siapkan AnyKernel3
+        run: |
+          BOOT=kernel/out/arch/arm64/boot
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3 ak3
+          echo "::notice::AnyKernel3 commit $(git -C ak3 rev-parse HEAD) (catat bila perlu mengunci versi)"
+          rm -rf ak3/.git ak3/.github ak3/README.md
+
+          # --- Tambalan AnyKernel3: bug status keluar di split_boot() (ak3-core.sh) ---
+          # Di AK3 master, baris `[ $? == 1 ] && splitfail=1;` membuat `$?` bernilai 1 walau magiskboot SUKSES, sehingga
+          # `if [ $? != 0 -o "$splitfail" ]` sesudahnya selalu abort: "Splitting image failed. Aborting..." (flash gagal di
+          # recovery pada boot.img apa pun, bukan salah ponsel/kernel). Diganti `case`, yang berstatus 0 bila tidak cocok.
+          CORE=ak3/tools/ak3-core.sh
+          if grep -qE '^[[:space:]]*\[ \$\? == 1 \] && splitfail=1;' "$CORE"; then
+            sed -i -E 's/^([[:space:]]*)\[ \$\? == 1 \] && splitfail=1;/\1case $? in 1) splitfail=1;; esac;/' "$CORE"
+            grep -q 'case \$? in 1) splitfail=1;; esac;' "$CORE" \
+              || { echo "::error::Tambalan ak3-core.sh (split_boot) gagal diterapkan"; exit 1; }
+            echo "::notice::ak3-core.sh ditambal: bug status keluar split_boot"
+          fi
+          # Uji: split_boot() asli + magiskboot palsu. Exit 0 (sukses) TIDAK boleh abort; exit 1 (gagal) harus abort.
+          T="$(mktemp -d)"; mkdir -p "$T/tools"
+          awk '/^split_boot\(\) \{/{f=1} f{print} f&&/^}/{exit}' "$CORE" > "$T/split_fn.sh"
+          if [ ! -s "$T/split_fn.sh" ]; then
+            echo "::warning::split_boot() tidak ditemukan di ak3-core.sh (struktur AnyKernel3 berubah); uji split_boot dilewati"
+          else
+            head -c 4096 /dev/zero > "$T/block.img"
+            printf '#!/bin/sh\nexit ${FAKE_RC:-0}\n' > "$T/tools/magiskboot"; chmod +x "$T/tools/magiskboot"
+            cat > "$T/harness.sh" <<'HARNESS'
+          abort(){ ABORTED=1; }
+          AKHOME=$T; BIN=$T/tools; BOOTIMG=$T/boot.img; SPLITIMG=$T/split_img; BLOCK=$T/block.img; PATH=$BIN:$PATH
+          . $T/split_fn.sh
+          ABORTED=0; split_boot >/dev/null 2>&1; echo $ABORTED
+          HARNESS
+            for rc in 0 1; do
+              GOT="$(FAKE_RC=$rc T="$T" bash "$T/harness.sh" | tail -1)"; rm -rf "$T/split_img" "$T/boot.img"
+              [ "$rc" = 0 ] && WANT=0 || WANT=1
+              echo "uji split_boot: magiskboot exit ${rc} -> abort=${GOT} (harus ${WANT})"
+              [ "$GOT" = "$WANT" ] || { echo "::error::split_boot() salah menangani exit ${rc}; zip hasilnya tidak akan bisa diflash"; exit 1; }
+            done
+          fi
+          rm -rf "$T"
+
+          # Pakai Image.gz-dtb jika ada, kalau tidak gabungkan Image.gz + dtb
+          if [ -f "$BOOT/Image.gz-dtb" ]; then
+            cp "$BOOT/Image.gz-dtb" ak3/Image.gz-dtb
+          elif [ -f "$BOOT/Image.gz" ]; then
+            DTBS=$(find kernel/out/arch/arm64/boot/dts -name '*whyred*.dtb' | sort)
+            [ -n "$DTBS" ] || { echo "DTB whyred tidak ditemukan"; exit 1; }
+            cat "$BOOT/Image.gz" $DTBS > ak3/Image.gz-dtb
+          else
+            echo "Kernel image tidak ditemukan"; exit 1
+          fi
+
+          # Konfigurasi anykernel.sh untuk Redmi Note 5 Pro (whyred)
+          sed -i \
+            -e "s|^kernel.string=.*|kernel.string=${{ inputs.kernel_name }} by ${{ github.actor }}|" \
+            -e "s|^do.devicecheck=.*|do.devicecheck=1|" \
+            -e "s|^do.modules=.*|do.modules=0|" \
+            -e "s|^do.cleanup=.*|do.cleanup=1|" \
+            -e "s|^device.name1=.*|device.name1=whyred|" \
+            -e "s|^device.name2=.*|device.name2=Redmi Note 5 Pro|" \
+            -e "s|^device.name3=.*|device.name3=|" \
+            -e "s|^device.name4=.*|device.name4=|" \
+            -e "s|^device.name5=.*|device.name5=|" \
+            -e "s|^block=.*|block=/dev/block/bootdevice/by-name/boot;|" \
+            -e "s|^is_slot_device=.*|is_slot_device=0;|" \
+            -e "s|^BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot;|" \
+            -e "s|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=0;|" \
+            ak3/anykernel.sh
+          # AnyKernel3 baru memakai BLOCK/IS_SLOT_DEVICE (huruf besar), versi lama huruf kecil: pastikan salah satunya terpasang
+          grep -Eiq '^block=/dev/block/bootdevice/by-name/boot;' ak3/anykernel.sh \
+            || { echo "::error::block boot whyred gagal diset di anykernel.sh"; grep -in 'block' ak3/anykernel.sh; exit 1; }
+          grep -Eiq '^is_slot_device=0;' ak3/anykernel.sh \
+            || { echo "::error::is_slot_device gagal diset di anykernel.sh"; exit 1; }
+          grep -Ein '^(block|is_slot_device)=' ak3/anykernel.sh
+          # Hapus contoh edit ramdisk bawaan AnyKernel3
+          sed -i '/# begin ramdisk changes/,/# end ramdisk changes/{//!d}' ak3/anykernel.sh
+          # AK3 baru: contoh edit ramdisk (init.tuna.rc, fstab.tuna, dll) ada di antara dump_boot dan write_boot, tanpa penanda begin/end.
+          sed -i '/^dump_boot;/,/^write_boot;/{/^dump_boot;/b;/^write_boot;/b;d}' ak3/anykernel.sh
+          if grep -Eq 'tuna|cpuctl' ak3/anykernel.sh; then echo "::error::contoh edit ramdisk AnyKernel3 masih ada"; grep -En 'tuna|cpuctl' ak3/anykernel.sh; exit 1; fi
+
+      - name: Buat zip
+        id: pack
+        run: |
+          VER=$(make -s -C kernel O=out ARCH=arm64 kernelversion 2>/dev/null || echo 4.19)
+          # cipNNN dan stNN dibaca dari uname -r hasil build (mis. 4.19.325-cip137-st21-kaizen)
+          KREL="$(cat kernel/out/include/config/kernel.release 2>/dev/null || true)"
+          CIPV="$(echo "$KREL" | grep -oE -- '-cip[0-9]+' | head -1 | tr -d '-' || true)"
+          STV="$(echo "$KREL" | grep -oE -- '-st[0-9]+' | head -1 | tr -d '-' || true)"
+          [ -n "$STV" ] || STV="st${ST_VERSION}"
+          echo "Versi di nama zip: ${CIPV:-tanpa-cip} ${STV} (uname -r: ${KREL})"
+          ZIP="${{ inputs.kernel_name }}-${VER}${CIPV:+-$CIPV}-${STV}-whyred-xxKSU-${KSU_LABEL:-$KSU_REF}$([ "$NOMOUNT_ENABLE" = true ] && echo -NoMount)$([ "$SUSFS_ENABLE" = true ] && echo "-SUSFS-${SUSFS_VER:-}")$([ "$FGP_ENABLE" = true ] && echo -fgp)-LTO-${LTO_FINAL:-none}-$(date +%Y%m%d-%H%M).zip"
+          (cd ak3 && zip -r9 "../$ZIP" . -x '*.git*')
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          sha256sum "$ZIP"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.pack.outputs.zip }}
+          path: ${{ steps.pack.outputs.zip }}
+
+      - name: Upload .config hasil build (untuk dibandingkan dengan kernel lain)
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: kernel-config
+          if-no-files-found: ignore
+          include-hidden-files: true
+          path: kernel/out/.config
+
+      - name: Upload log build jika gagal
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-log
+          path: |
+            build.log
+            kernel/out/.config
+            kernel/KernelSU/kernel/Kconfig
+            kernel/KernelSU/kernel/Kbuild
+            kernel/NoMount/kernel/src/Kconfig
+            kernel/fs/Kconfig.susfs
+            kernel/**/*.rej
+          include-hidden-files: true
+
+      - name: Upload ke GitHub Release
+        if: ${{ inputs.release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="whyred-$(date +%Y%m%d-%H%M)"
+          gh release create "$TAG" "${{ steps.pack.outputs.zip }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ inputs.kernel_name }} $TAG" \
+            --notes "Versi source: st${ST_VERSION}. Maya Kernel cherry-pick: ${MAYA_MERGE}. LTO: ${LTO_FINAL:-none}. Kernel whyred dari ${{ inputs.kernel_repo }} (${{ inputs.kernel_branch }}) + upstream CIP merge: ${CIP_MERGED:-tidak} ${CIP_COMMIT:+@ ${CIP_COMMIT:0:8}} + xxKSU ${KSU_LABEL:-$KSU_REF} @ ${KSU_COMMIT:0:8} (SELinux: ${KSU_SEL_NOTE}, hook: ${KSU_HOOK_MODE}) + NoMount: ${NOMOUNT_ENABLE} (${NOMOUNT_TAG}, built-in) + SUSFS: ${SUSFS_ENABLE} (${SUSFS_VER:-tidak}, sisi-KernelSU: ${SUSFS_GLUE:-tidak}) + fgetpriority: ${FGP_ENABLE} (${FGP_COMMIT:0:8}, built-in). Versi driver ${KSU_DRV_VERSION} = manager versionCode ${KSU_MGR_CODE}. Manager: APK dari rilis xxKSU ${KSU_LABEL} (https://github.com/backslashxx/KernelSU/releases/tag/${KSU_LABEL}); tanda tangan dummy.keystore diterima driver."
